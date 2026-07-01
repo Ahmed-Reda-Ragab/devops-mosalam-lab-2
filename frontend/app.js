@@ -1,5 +1,7 @@
-const backendBaseUrl = new URLSearchParams(window.location.search).get('backend') || `${window.location.hostname}:8000`;
-const apiUrl = `http://${backendBaseUrl}/api/tasks`;
+// API is served same-origin via the nginx reverse proxy (/api -> backend).
+// Optional ?backend=<baseUrl> overrides it for testing against a direct backend.
+const apiBase = new URLSearchParams(window.location.search).get('backend') || '';
+const apiUrl = `${apiBase}/api/tasks`;
 const backendUrlLabel = document.getElementById('backend-url');
 const taskForm = document.getElementById('task-form');
 const taskList = document.getElementById('task-list');
@@ -9,7 +11,7 @@ const formTitle = document.getElementById('form-title');
 
 let editingTaskId = null;
 
-backendUrlLabel.textContent = `http://${backendBaseUrl}`;
+backendUrlLabel.textContent = apiBase || `${window.location.origin}/api`;
 
 function showError(message) {
   errorMessage.textContent = message;
