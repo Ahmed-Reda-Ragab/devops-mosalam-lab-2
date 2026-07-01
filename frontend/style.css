@@ -1,0 +1,131 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #f5f7fb;
+  color: #111827;
+}
+
+main {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+h1 {
+  margin-bottom: 18px;
+}
+
+.form-panel,
+.list-panel {
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.08);
+  margin-bottom: 20px;
+}
+
+label {
+  display: block;
+  margin-bottom: 14px;
+  font-weight: 600;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  margin-top: 6px;
+  padding: 12px 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  font-size: 1rem;
+  background: #f8fafc;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.buttons {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+button {
+  border: none;
+  border-radius: 12px;
+  padding: 12px 18px;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+button[type="submit"] {
+  background: #2563eb;
+  color: white;
+}
+
+button.secondary {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.hidden {
+  display: none;
+}
+
+#task-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.task-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.task-item h3 {
+  margin: 0 0 8px;
+}
+
+.task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #6b7280;
+  font-size: 0.95rem;
+}
+
+.task-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.task-actions button {
+  flex: 1;
+}
+
+.error {
+  color: #b91c1c;
+  margin-bottom: 12px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.hint {
+  margin: 0;
+  color: #6b7280;
+}
