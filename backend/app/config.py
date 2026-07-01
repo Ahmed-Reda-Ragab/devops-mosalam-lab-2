@@ -1,12 +1,12 @@
-from pydantic import BaseSettings, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    db_host: str = Field(..., env="DB_HOST")
-    db_port: int = Field(3306, env="DB_PORT")
-    db_database: str = Field(..., env="DB_DATABASE")
-    db_username: str = Field(..., env="DB_USERNAME")
-    db_password: str = Field(..., env="DB_PASSWORD")
+    db_host: str
+    db_port: int = 3306
+    db_database: str
+    db_username: str
+    db_password: str
 
     @property
     def database_url(self) -> str:
@@ -14,8 +14,7 @@ class Settings(BaseSettings):
             f"mysql+pymysql://{self.db_username}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_database}?charset=utf8mb4"
         )
 
-    class Config:
-        case_sensitive = True
+    model_config = SettingsConfigDict(case_sensitive=False)
 
 
 settings = Settings()
