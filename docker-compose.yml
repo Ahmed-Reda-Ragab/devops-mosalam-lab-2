@@ -92,6 +92,8 @@ services:
     image: gcr.io/cadvisor/cadvisor:latest
     restart: unless-stopped
     expose:
+      - "8080"
+    ports:
       - "8082:8080"
     volumes:
       - /:/rootfs:ro
