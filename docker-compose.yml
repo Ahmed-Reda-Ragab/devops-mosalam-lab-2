@@ -17,7 +17,7 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - private-network
+      - db-network
 
   backend:
     build:
@@ -29,9 +29,16 @@ services:
     expose:
       - '8000'
     restart: unless-stopped
+    replicas: 2
     networks:
-      - public-network
       - private-network
+      - db-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   frontend:
     build:
@@ -42,7 +49,13 @@ services:
       - '80'
     restart: unless-stopped
     networks:
-      - public-network
+      - private-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   nginx:
     image: nginx:latest
@@ -56,6 +69,7 @@ services:
     restart: unless-stopped
     networks:
       - public-network
+      - private-network
 
 volumes:
   db_data:
@@ -63,4 +77,6 @@ volumes:
 networks:
   public-network:
   private-network:
+    internal: true
+  db-network:
     internal: true
