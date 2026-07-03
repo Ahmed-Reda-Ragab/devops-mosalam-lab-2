@@ -3,6 +3,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from .routes import router as tasks_router
 from .health import router as health_router
+from prometheus_fastapi_instrumentator import Instrumentator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -13,6 +14,7 @@ logger = logging.getLogger("backend")
 app = FastAPI(title="Task Manager API", version="1.0")
 app.include_router(tasks_router)
 app.include_router(health_router)
+Instrumentator().instrument(app).expose(app)   # يضيف /metrics
 
 
 @app.middleware("http")
