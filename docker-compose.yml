@@ -153,15 +153,43 @@ services:
       start_period: 30s
     networks:
       - public-network
+      - monitoring-network
+
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    volumes:
+      - loki-data:/loki
+    mem_limit: 256M
+    cpus: '0.5'
+    networks:
+      - monitoring-network
+
+  promtail:
+    image: grafana/promtail:latest
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 128M
+    cpus: '0.25'
+    networks:
+      - monitoring-network
 
 volumes:
   db_data:
   prometheus-data:
   grafana-data:
+  loki-data:
 
 networks:
   public-network:
   private-network:
     internal: true
   db-network:
+    internal: true
+  monitoring-network:
     internal: true
