@@ -1,0 +1,13 @@
+api:
+  dashboard: true
+
+providers:
+  docker:
+    exposedByDefault: false
+
+  file:
+    filename: /etc/traefik/dynamic.yml
+
+entryPoints:
+  web:
+    address: ":80"

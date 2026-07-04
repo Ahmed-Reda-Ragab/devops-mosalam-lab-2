@@ -71,23 +71,25 @@ services:
       retries: 3
       start_period: 30s
 
-  nginx:
-    image: nginx:latest
-    depends_on:
-      - frontend
-      - backend
+  traefik:
+    image: traefik:v3.5
+    container_name: traefik
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
     ports:
-      - '80:80'
+      - "80:80"
+      - "8080:8080"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    restart: unless-stopped
-    mem_limit: 128M
-    cpus: '0.25'
-    logging:
-      driver: "local"
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - public-network
       - private-network
+    restart: unless-stopped
+    
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
     restart: unless-stopped

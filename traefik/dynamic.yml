@@ -1,0 +1,32 @@
+http:
+
+  routers:
+
+    frontend:
+      rule: PathPrefix(`/`)
+      service: frontend
+
+    backend:
+      rule: PathPrefix(`/api`)
+      service: backend
+
+    grafana:
+      rule: PathPrefix(`/grafana`)
+      service: grafana
+
+  services:
+
+    frontend:
+      loadBalancer:
+        servers:
+          - url: http://frontend
+
+    backend:
+      loadBalancer:
+        servers:
+          - url: http://backend:8000
+
+    grafana:
+      loadBalancer:
+        servers:
+          - url: http://grafana:3000
