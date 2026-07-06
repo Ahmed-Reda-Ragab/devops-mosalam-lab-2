@@ -1,0 +1,106 @@
+groups:
+  # --- Availability: any scrape target down (prometheus, cadvisor, node-exporter,
+  #     backend, loki, promtail). Covers the log pipeline too. ---
+  - name: availability
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Target {{ $labels.job }} is down'
+          description: '{{ $labels.instance }} (job {{ $labels.job }}) has been unreachable for over 1 minute.'
+
+  # --- Containers (cAdvisor) ---
+  - name: containers
+    rules:
+      - alert: ContainerNearMemoryLimit
+        expr: container_memory_working_set_bytes{name=~".+"} / (container_spec_memory_limit_bytes{name=~".+"} > 0) > 0.9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Container {{ $labels.name }} near its memory limit'
+          description: '{{ $labels.name }} is using {{ $value | humanizePercentage }} of its mem_limit (OOM risk).'
+
+      - alert: ContainerCPUThrottling
+        expr: rate(container_cpu_cfs_throttled_periods_total{name=~".+"}[5m]) / rate(container_cpu_cfs_periods_total{name=~".+"}[5m]) > 0.25
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Container {{ $labels.name }} is CPU throttled'
+          description: '{{ $labels.name }} is hitting its CPU limit ({{ $value | humanizePercentage }} of periods throttled).'
+
+      - alert: ContainerRestarting
+        expr: changes(container_start_time_seconds{name=~".+"}[15m]) > 3
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Container {{ $labels.name }} is crash-looping'
+          description: '{{ $labels.name }} restarted more than 3 times in the last 15 minutes.'
+
+  # --- Backend application (RED) ---
+  - name: backend
+    rules:
+      - alert: BackendHighErrorRate
+        expr: 100 * sum(rate(http_requests_total{job="backend",status=~"5.."}[5m])) / sum(rate(http_requests_total{job="backend"}[5m])) > 10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Backend 5xx error rate is high'
+          description: '5xx errors are {{ $value | printf "%.1f" }}% of requests over the last 5m.'
+
+      - alert: BackendHighLatencyP95
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job="backend"}[5m]))) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Backend p95 latency is high'
+          description: 'p95 latency is {{ $value | printf "%.2f" }}s over the last 5m.'
+
+  # --- Host (node-exporter) ---
+  - name: host
+    rules:
+      - alert: HostDiskAlmostFull
+        expr: 100 * (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) < 15
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Disk almost full on {{ $labels.mountpoint }}'
+          description: 'Only {{ $value | printf "%.1f" }}% free on {{ $labels.mountpoint }} ({{ $labels.device }}).'
+
+      - alert: HostHighCPU
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'High CPU usage on host'
+          description: 'Host CPU usage is {{ $value | printf "%.1f" }}% over the last 5m.'
+
+      - alert: HostHighMemory
+        expr: 100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 90
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'High memory usage on host'
+          description: 'Host memory usage is {{ $value | printf "%.1f" }}%.'
+
+  # --- Monitoring self-health ---
+  - name: monitoring
+    rules:
+      - alert: PrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful == 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Prometheus config reload failed'
+          description: 'The last reload of prometheus.yml failed — check the config syntax.'

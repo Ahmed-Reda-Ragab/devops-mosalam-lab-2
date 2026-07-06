@@ -140,6 +140,7 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -209,11 +210,29 @@ services:
     networks:
       - monitoring-network
 
+  alertmanager:
+    image: prom/alertmanager:latest
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/telegram_token:/etc/alertmanager/telegram_token:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.external-url=http://localhost/alertmanager
+      - --web.route-prefix=/alertmanager
+    mem_limit: 128M
+    cpus: '0.25'
+    networks:
+      - monitoring-network
+
 volumes:
   db_data:
   prometheus-data:
   grafana-data:
   loki-data:
+  alertmanager-data:
 
 networks:
   public-network:
