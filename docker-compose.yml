@@ -226,6 +226,7 @@ services:
     cpus: '0.25'
     networks:
       - monitoring-network
+      - public-network
 
 volumes:
   db_data:
