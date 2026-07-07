@@ -1,2 +1,4 @@
 # Secrets — never commit
 alertmanager/telegram_token
+
+backend/.env
