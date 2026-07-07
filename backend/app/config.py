@@ -14,7 +14,10 @@ class Settings(BaseSettings):
             f"mysql+pymysql://{self.db_username}:{self.db_password}@{self.db_host}:{self.db_port}/{self.db_database}?charset=utf8mb4"
         )
 
-    model_config = SettingsConfigDict(case_sensitive=False)
+    # Non-secret fields come from the environment; db_password is read from a
+    # Docker secret file (/run/secrets/db_password) in production, and still
+    # falls back to the DB_PASSWORD env var for local/CI runs.
+    model_config = SettingsConfigDict(case_sensitive=False, secrets_dir="/run/secrets")
 
 
 settings = Settings()

@@ -1,4 +1,14 @@
-# Secrets — never commit
+# Secrets — never commit real values, only the *.example templates
+secrets/*
+!secrets/*.example
 alertmanager/telegram_token
 
-backend/.env
+# Environment files — real values are git-ignored; only *.example are committed
+.env
+
+# Database backups (may contain real data)
+backups/
+
+# Python
+__pycache__/
+*.pyc

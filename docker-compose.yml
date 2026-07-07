@@ -3,15 +3,22 @@ services:
     image: mysql:8.0
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: appdb
-      MYSQL_USER: appuser
-      MYSQL_PASSWORD: secret
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - mysql_root_password
+      - db_password
     volumes:
       - db_data:/var/lib/mysql
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-prootpass"]
+      # Read the root password from the mounted secret instead of hardcoding it.
+      # $$ escapes compose interpolation so the container's shell does the expansion.
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -uroot -p"$$(cat /run/secrets/mysql_root_password)" --silent
       interval: 20s
       timeout: 5s
       retries: 5
@@ -29,7 +36,9 @@ services:
     depends_on:
       - db
     env_file:
-      - ./backend/.env
+      - ./.env
+    secrets:
+      - db_password
     expose:
       - '8000'
     restart: unless-stopped
@@ -167,9 +176,11 @@ services:
       - "3100:3000"
     environment:
       GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
       GF_SERVER_ROOT_URL: http://localhost/grafana/
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    secrets:
+      - grafana_admin_password
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
@@ -215,8 +226,9 @@ services:
     restart: unless-stopped
     volumes:
       - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - ./alertmanager/telegram_token:/etc/alertmanager/telegram_token:ro
       - alertmanager-data:/alertmanager
+    secrets:
+      - telegram_token
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
@@ -234,6 +246,16 @@ volumes:
   grafana-data:
   loki-data:
   alertmanager-data:
+
+secrets:
+  mysql_root_password:
+    file: ./secrets/mysql_root_password
+  db_password:
+    file: ./secrets/db_password
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password
+  telegram_token:
+    file: ./secrets/telegram_token
 
 networks:
   public-network:

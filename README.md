@@ -89,14 +89,19 @@ docker-compose   → Orchestrates all services + MySQL
 
 ## Environment Configuration
 
-Edit `backend/.env`:
+Non-secret settings live in the root `.env` file (copy it from the template):
+```bash
+cp .env.example .env
+```
 ```env
 DB_HOST=db
 DB_PORT=3306
 DB_DATABASE=appdb
 DB_USERNAME=appuser
-DB_PASSWORD=secret
 ```
+
+Passwords and tokens are **not** stored here — they are Docker secrets under
+`./secrets/*` (git-ignored). See [ROADMAP.md](./ROADMAP.md) for setup details.
 
 ## Documentation
 

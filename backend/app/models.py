@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Column, String, Text, TIMESTAMP, func
+from sqlalchemy import TIMESTAMP, BigInteger, Column, String, Text, func
 from sqlalchemy.dialects.mysql import ENUM as MySQLEnum
 from sqlalchemy.orm import declarative_base
 
