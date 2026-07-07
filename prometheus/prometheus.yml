@@ -43,3 +43,15 @@ scrape_configs:
     static_configs:
       - targets:
           - promtail:9080
+
+  - job_name: grafana
+    metrics_path: /grafana/metrics
+    static_configs:
+      - targets:
+          - grafana:3000
+
+  - job_name: alertmanager
+    metrics_path: /alertmanager/metrics
+    static_configs:
+      - targets:
+          - alertmanager:9093

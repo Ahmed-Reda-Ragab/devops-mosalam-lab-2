@@ -1,6 +1,9 @@
 groups:
-  # --- Availability: any scrape target down (prometheus, cadvisor, node-exporter,
-  #     backend, loki, promtail). Covers the log pipeline too. ---
+  # --- Availability ---
+  # TargetDown covers everything Prometheus scrapes (prometheus, cadvisor,
+  # node-exporter, backend, loki, promtail, grafana, alertmanager).
+  # The three services that expose no metrics endpoint (db, frontend, nginx)
+  # are watched at the container level via cAdvisor instead.
   - name: availability
     rules:
       - alert: TargetDown
@@ -11,6 +14,38 @@ groups:
         annotations:
           summary: 'Target {{ $labels.job }} is down'
           description: '{{ $labels.instance }} (job {{ $labels.job }}) has been unreachable for over 1 minute.'
+
+      # cAdvisor stops reporting a container the moment it is gone, so absent()
+      # over its compose-service label tells us the container is not running.
+      - alert: DatabaseDown
+        expr: absent(container_last_seen{container_label_com_docker_compose_service="db"})
+        for: 2m
+        labels:
+          severity: critical
+          service: db
+        annotations:
+          summary: 'Database (MySQL) container is down'
+          description: 'cAdvisor has not seen the db container for over 2 minutes — MySQL is not running.'
+
+      - alert: FrontendDown
+        expr: absent(container_last_seen{container_label_com_docker_compose_service="frontend"})
+        for: 2m
+        labels:
+          severity: critical
+          service: frontend
+        annotations:
+          summary: 'Frontend container is down'
+          description: 'cAdvisor has not seen the frontend container for over 2 minutes — the site is not being served.'
+
+      - alert: NginxDown
+        expr: absent(container_last_seen{container_label_com_docker_compose_service="nginx"})
+        for: 2m
+        labels:
+          severity: critical
+          service: nginx
+        annotations:
+          summary: 'Nginx reverse proxy is down'
+          description: 'cAdvisor has not seen the nginx container for over 2 minutes — the whole site is unreachable from outside.'
 
   # --- Containers (cAdvisor) ---
   - name: containers
@@ -23,6 +58,15 @@ groups:
         annotations:
           summary: 'Container {{ $labels.name }} near its memory limit'
           description: '{{ $labels.name }} is using {{ $value | humanizePercentage }} of its mem_limit (OOM risk).'
+
+      - alert: ContainerOOMKilled
+        expr: increase(container_oom_events_total{name=~".+"}[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Container {{ $labels.name }} was OOM-killed'
+          description: '{{ $labels.name }} hit its memory limit and was killed by the OOM killer in the last 10 minutes.'
 
       - alert: ContainerCPUThrottling
         expr: rate(container_cpu_cfs_throttled_periods_total{name=~".+"}[5m]) / rate(container_cpu_cfs_periods_total{name=~".+"}[5m]) > 0.25
@@ -75,6 +119,29 @@ groups:
           summary: 'Disk almost full on {{ $labels.mountpoint }}'
           description: 'Only {{ $value | printf "%.1f" }}% free on {{ $labels.mountpoint }} ({{ $labels.device }}).'
 
+      # Trend-based: the disk is on a path to fill within 24h. Catches slow
+      # leaks (logs, images) long before HostDiskAlmostFull would fire.
+      - alert: HostDiskWillFillSoon
+        expr: |
+          predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}[6h], 24 * 3600) < 0
+          and
+          node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.4
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Disk on {{ $labels.mountpoint }} will fill within 24h'
+          description: 'At the current growth rate {{ $labels.mountpoint }} ({{ $labels.device }}) is projected to run out of space in under 24 hours.'
+
+      - alert: HostFilesystemReadOnly
+        expr: node_filesystem_readonly{fstype!~"tmpfs|overlay|squashfs"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Filesystem {{ $labels.mountpoint }} is read-only'
+          description: '{{ $labels.mountpoint }} ({{ $labels.device }}) has been mounted read-only — usually a sign of disk corruption or failure.'
+
       - alert: HostHighCPU
         expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
         for: 5m
@@ -94,6 +161,9 @@ groups:
           description: 'Host memory usage is {{ $value | printf "%.1f" }}%.'
 
   # --- Monitoring self-health ---
+  # These make sure the alerting pipeline itself is healthy. If Prometheus can't
+  # reach Alertmanager, or Alertmanager can't deliver to Telegram, you'd
+  # otherwise get silence — which looks exactly like "everything is fine".
   - name: monitoring
     rules:
       - alert: PrometheusConfigReloadFailed
@@ -104,3 +174,30 @@ groups:
         annotations:
           summary: 'Prometheus config reload failed'
           description: 'The last reload of prometheus.yml failed — check the config syntax.'
+
+      - alert: PrometheusNotConnectedToAlertmanager
+        expr: prometheus_notifications_alertmanagers_discovered < 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Prometheus is not connected to any Alertmanager'
+          description: 'Prometheus has 0 Alertmanagers configured/discovered — no alert would ever be delivered.'
+
+      - alert: PrometheusAlertDeliveryFailing
+        expr: rate(prometheus_notifications_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Prometheus is failing to send alerts to Alertmanager'
+          description: 'Prometheus has been getting errors while pushing alerts to Alertmanager for over 5 minutes.'
+
+      - alert: AlertmanagerNotificationFailing
+        expr: rate(alertmanager_notifications_failed_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Alertmanager is failing to deliver notifications'
+          description: 'Alertmanager could not deliver notifications via {{ $labels.integration }} (e.g. Telegram) — check the bot token, chat_id and network egress.'
