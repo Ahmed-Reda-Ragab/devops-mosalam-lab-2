@@ -94,6 +94,8 @@ jobs:
       - name: Scan backend image (Trivy)
         uses: aquasecurity/trivy-action@v0.33.1
         with:
+          # Authenticate the binary download so setup-trivy isn't rate-limited (60->1000/hr).
+          token-setup-trivy: ${{ github.token }}
           image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
           format: table
           exit-code: "1"
@@ -105,6 +107,8 @@ jobs:
       - name: Scan frontend image (Trivy)
         uses: aquasecurity/trivy-action@v0.33.1
         with:
+          # Authenticate the binary download so setup-trivy isn't rate-limited (60->1000/hr).
+          token-setup-trivy: ${{ github.token }}
           image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
           format: table
           exit-code: "0"
