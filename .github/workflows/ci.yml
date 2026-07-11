@@ -101,7 +101,7 @@ jobs:
           severity: CRITICAL
           vuln-type: os,library
 
-      # Frontend is report-only for now (nginx:latest is pinned in ROADMAP).
+      # Frontend is report-only for now (pinned alpine base keeps CVEs low).
       - name: Scan frontend image (Trivy)
         uses: aquasecurity/trivy-action@0.28.0
         with:
