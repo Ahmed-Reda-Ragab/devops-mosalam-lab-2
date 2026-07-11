@@ -1,0 +1,9 @@
+line-length = 140
+target-version = "py312"
+extend-exclude = ["alembic"]
+
+[lint]
+# Baseline that catches real problems (undefined names, unused imports, syntax,
+# import ordering) without enforcing stylistic rewrites. Tighten later by adding
+# "B" (bugbear) and "UP" (pyupgrade) once the app code is migrated.
+select = ["E", "F", "I", "W"]

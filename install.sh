@@ -14,7 +14,10 @@ git clone https://github.com/Ahmed-Reda-Ragab/devops-mosalam-lab-2.git
 
 cp .env.example .env 
 cp secrets/db_password.example secrets/db_password
+cp secrets/grafana_admin_password.example secrets/grafana_admin_password
+cp secrets/mysql_root_password.example mysql_root_password
 cp secrets/telegram_token.example secrets/telegram_token
+
 # Navigate to the project directory
 cd devops-mosalam-lab-2
 
