@@ -20,11 +20,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/opt/venv/bin:$PATH"
 
-# curl is needed by the container/compose healthcheck; create an unprivileged user.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl=7.88.1-10+deb12u12 \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system appuser \
+# Create an unprivileged user to run the app. No apt packages are installed:
+# the healthcheck uses Python's stdlib (already in the image) instead of curl,
+# so there's no Debian package version to pin against a rolling base image.
+RUN groupadd --system appuser \
     && useradd --system --gid appuser --home-dir /app --no-create-home appuser
 
 WORKDIR /app
@@ -36,6 +35,6 @@ USER appuser
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS http://localhost:8000/health || exit 1
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
