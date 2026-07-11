@@ -92,7 +92,7 @@ jobs:
 
       # Backend blocks the pipeline on fixable CRITICAL CVEs.
       - name: Scan backend image (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
           format: table
@@ -103,7 +103,7 @@ jobs:
 
       # Frontend is report-only for now (pinned alpine base keeps CVEs low).
       - name: Scan frontend image (Trivy)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
           format: table
