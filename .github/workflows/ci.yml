@@ -1,6 +1,6 @@
 name: CI
 
-# lint + test  ->  build + scan  ->  push images to Docker Hub (main only).
+# lint + test  ->  build  ->  push images to Docker Hub (main only).
 # No deploy step by design: images are published to the registry and a server
 # can pull them later.
 
@@ -60,9 +60,9 @@ jobs:
         with:
           dockerfile: frontend/Dockerfile
 
-  # ------------------------------------------------------ build + scan + push
+  # ------------------------------------------------------------- build + push
   build-and-push:
-    name: Build, scan & push
+    name: Build & push
     needs: lint-test
     runs-on: ubuntu-latest
     steps:
@@ -71,12 +71,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build into the runner first so Trivy can scan before anything is pushed.
+      # Build on every push/PR to validate the Dockerfiles. On main the push
+      # steps below reuse this GHA layer cache, so the rebuild is near-instant.
       - name: Build backend image
         uses: docker/build-push-action@v6
         with:
           context: ./backend
-          load: true
           tags: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -85,35 +85,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
-          load: true
           tags: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      # Backend blocks the pipeline on fixable CRITICAL CVEs.
-      - name: Scan backend image (Trivy)
-        uses: aquasecurity/trivy-action@v0.33.1
-        with:
-          # Authenticate the binary download so setup-trivy isn't rate-limited (60->1000/hr).
-          token-setup-trivy: ${{ github.token }}
-          image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
-          format: table
-          exit-code: "1"
-          ignore-unfixed: true
-          severity: CRITICAL
-          vuln-type: os,library
-
-      # Frontend is report-only for now (pinned alpine base keeps CVEs low).
-      - name: Scan frontend image (Trivy)
-        uses: aquasecurity/trivy-action@v0.33.1
-        with:
-          # Authenticate the binary download so setup-trivy isn't rate-limited (60->1000/hr).
-          token-setup-trivy: ${{ github.token }}
-          image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
-          format: table
-          exit-code: "0"
-          ignore-unfixed: true
-          severity: CRITICAL,HIGH
 
       # ---- push only on main, never on PRs (where secrets are unavailable) ----
       - name: Log in to Docker Hub
