@@ -1,0 +1,313 @@
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - mysql_root_password
+      - db_password
+    volumes:
+      - db_data:/var/lib/mysql
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # Read the root password from the mounted secret instead of hardcoding it.
+      # $$ escapes compose interpolation so the container's shell does the expansion.
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -uroot -p"$$(cat /run/secrets/mysql_root_password)" --silent
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 512M
+    cpus: 1
+    logging:
+      driver: "local"
+    networks:
+      - db-network
+
+  backend:
+    build:
+      context: ./backend
+    depends_on:
+      - db
+    env_file:
+      - ./.env
+    secrets:
+      - db_password
+    expose:
+      - '8000'
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.backend.rule=PathPrefix(`/api`)
+      - traefik.http.routers.backend.entrypoints=web
+      - traefik.http.routers.backend.priority=100
+      - traefik.http.middlewares.backend-strip-prefix.stripprefix.prefixes=/api
+      - traefik.http.routers.backend.middlewares=backend-strip-prefix@docker
+      - traefik.http.services.backend.loadbalancer.server.port=8000
+    restart: unless-stopped
+    mem_limit: 512M
+    cpus: 1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - private-network
+      - db-network
+      - monitoring-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      - backend
+    expose:
+      - '80'
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.frontend.rule=PathPrefix(`/`)
+      - traefik.http.routers.frontend.entrypoints=web
+      - traefik.http.routers.frontend.priority=1
+      - traefik.http.services.frontend.loadbalancer.server.port=80
+    restart: unless-stopped
+    mem_limit: 128M
+    cpus: '0.25'
+    logging:
+      driver: "local"
+    networks:
+      - private-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+  traefik:
+    image: traefik:v3.0.0
+    restart: unless-stopped
+    command:
+      - --api.insecure=true
+      - --providers.docker=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8081:8080" # Traefik dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 128M
+    cpus: '0.25'
+    logging:
+      driver: "local"
+    networks:
+      - public-network
+      - private-network
+      - monitoring-network
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    ports:
+      - "8082:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+    command:
+      - --docker_only=true
+    mem_limit: 256M
+    cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - public-network
+      - monitoring-network
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    mem_limit: 128M
+    cpus: '0.25'
+    logging:
+      driver: "local"
+    networks:
+      - monitoring-network
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+      - --web.external-url=http://localhost/prometheus
+      - --web.route-prefix=/prometheus
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.prometheus.rule=PathPrefix(`/prometheus`)
+      - traefik.http.routers.prometheus.entrypoints=web
+      - traefik.http.routers.prometheus.priority=100
+      - traefik.http.middlewares.prometheus-strip-prefix.stripprefix.prefixes=/prometheus
+      - traefik.http.routers.prometheus.middlewares=prometheus-strip-prefix@docker
+      - traefik.http.services.prometheus.loadbalancer.server.port=9090
+    mem_limit: 512M
+    cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:9090/prometheus/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - monitoring-network
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    ports:
+      - "3100:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_SERVER_ROOT_URL: http://localhost/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    secrets:
+      - grafana_admin_password
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.grafana.rule=PathPrefix(`/grafana`)
+      - traefik.http.routers.grafana.entrypoints=web
+      - traefik.http.routers.grafana.priority=100
+      - traefik.http.middlewares.grafana-strip-prefix.stripprefix.prefixes=/grafana
+      - traefik.http.middlewares.grafana-websocket.headers.customRequestHeaders.Connection=upgrade
+      - traefik.http.middlewares.grafana-websocket.headers.customRequestHeaders.Upgrade=websocket
+      - traefik.http.middlewares.grafana-websocket.headers.customResponseHeaders.Connection=upgrade
+      - traefik.http.middlewares.grafana-websocket.headers.customResponseHeaders.Upgrade=websocket
+      - traefik.http.routers.grafana.middlewares=grafana-strip-prefix@docker,grafana-websocket@docker
+      - traefik.http.services.grafana.loadbalancer.server.port=3000
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    mem_limit: 256M
+    cpus: '0.5'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000/grafana/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - public-network
+      - monitoring-network
+
+  loki:
+    image: grafana/loki:3.2.0
+    restart: unless-stopped
+    volumes:
+      - loki-data:/loki
+    mem_limit: 256M
+    cpus: '0.5'
+    networks:
+      - monitoring-network
+
+  promtail:
+    image: grafana/promtail:3.2.0
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    volumes:
+      - ./promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    mem_limit: 128M
+    cpus: '0.25'
+    networks:
+      - monitoring-network
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    secrets:
+      - telegram_token
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.external-url=http://localhost/alertmanager
+      - --web.route-prefix=/alertmanager
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.alertmanager.rule=PathPrefix(`/alertmanager`)
+      - traefik.http.routers.alertmanager.entrypoints=web
+      - traefik.http.routers.alertmanager.priority=100
+      - traefik.http.middlewares.alertmanager-strip-prefix.stripprefix.prefixes=/alertmanager
+      - traefik.http.routers.alertmanager.middlewares=alertmanager-strip-prefix@docker
+      - traefik.http.services.alertmanager.loadbalancer.server.port=9093
+    mem_limit: 128M
+    cpus: '0.25'
+    networks:
+      - monitoring-network
+      - public-network
+
+volumes:
+  db_data:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  alertmanager-data:
+
+secrets:
+  mysql_root_password:
+    file: ./secrets/mysql_root_password
+  db_password:
+    file: ./secrets/db_password
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password
+  telegram_token:
+    file: ./secrets/telegram_token
+
+networks:
+  public-network:
+  private-network:
+    internal: true
+  db-network:
+    internal: true
+  monitoring-network:
+    internal: true
