@@ -46,9 +46,11 @@ services:
       - traefik.http.routers.backend.rule=PathPrefix(`/api`)
       - traefik.http.routers.backend.entrypoints=web
       - traefik.http.routers.backend.priority=100
-      - traefik.http.middlewares.backend-strip-prefix.stripprefix.prefixes=/api
-      - traefik.http.routers.backend.middlewares=backend-strip-prefix@docker
+      # No stripprefix: FastAPI's router already mounts under /api, so the
+      # backend expects to receive the full /api/... path (as nginx passed it).
       - traefik.http.services.backend.loadbalancer.server.port=8000
+      # backend sits on 3 networks; pin the one Traefik shares with it.
+      - traefik.docker.network=private-network
     restart: unless-stopped
     mem_limit: 512M
     cpus: 1
@@ -81,6 +83,7 @@ services:
       - traefik.http.routers.frontend.entrypoints=web
       - traefik.http.routers.frontend.priority=1
       - traefik.http.services.frontend.loadbalancer.server.port=80
+      - traefik.docker.network=private-network
     restart: unless-stopped
     mem_limit: 128M
     cpus: '0.25'
@@ -98,16 +101,31 @@ services:
     image: traefik:v3.0.0
     restart: unless-stopped
     command:
-      - --api.insecure=true
+      - --api.dashboard=true
       - --providers.docker=true
+      # Only route containers that opt in with traefik.enable=true.
+      - --providers.docker.exposedbydefault=false
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
+      # Dedicated entrypoint for the dashboard so it never collides with the
+      # backend's /api routes on the web entrypoint.
+      - --entrypoints.dashboard.address=:8080
     ports:
       - "80:80"
       - "443:443"
-      - "8081:8080" # Traefik dashboard
+      - "8081:8080" # Traefik dashboard (basic auth)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    secrets:
+      - traefik_dashboard_users
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.dashboard.rule=PathPrefix(`/`)
+      - traefik.http.routers.dashboard.entrypoints=dashboard
+      - traefik.http.routers.dashboard.service=api@internal
+      - traefik.http.routers.dashboard.middlewares=dashboard-auth@docker
+      - traefik.http.middlewares.dashboard-auth.basicauth.usersfile=/run/secrets/traefik_dashboard_users
+      - traefik.docker.network=public-network
     mem_limit: 128M
     cpus: '0.25'
     logging:
@@ -181,9 +199,10 @@ services:
       - traefik.http.routers.prometheus.rule=PathPrefix(`/prometheus`)
       - traefik.http.routers.prometheus.entrypoints=web
       - traefik.http.routers.prometheus.priority=100
-      - traefik.http.middlewares.prometheus-strip-prefix.stripprefix.prefixes=/prometheus
-      - traefik.http.routers.prometheus.middlewares=prometheus-strip-prefix@docker
+      # No stripprefix: --web.route-prefix=/prometheus means Prometheus itself
+      # serves under /prometheus and expects that prefix in the request path.
       - traefik.http.services.prometheus.loadbalancer.server.port=9090
+      - traefik.docker.network=monitoring-network
     mem_limit: 512M
     cpus: '0.5'
     healthcheck:
@@ -212,13 +231,12 @@ services:
       - traefik.http.routers.grafana.rule=PathPrefix(`/grafana`)
       - traefik.http.routers.grafana.entrypoints=web
       - traefik.http.routers.grafana.priority=100
-      - traefik.http.middlewares.grafana-strip-prefix.stripprefix.prefixes=/grafana
-      - traefik.http.middlewares.grafana-websocket.headers.customRequestHeaders.Connection=upgrade
-      - traefik.http.middlewares.grafana-websocket.headers.customRequestHeaders.Upgrade=websocket
-      - traefik.http.middlewares.grafana-websocket.headers.customResponseHeaders.Connection=upgrade
-      - traefik.http.middlewares.grafana-websocket.headers.customResponseHeaders.Upgrade=websocket
-      - traefik.http.routers.grafana.middlewares=grafana-strip-prefix@docker,grafana-websocket@docker
+      # No stripprefix: GF_SERVER_SERVE_FROM_SUB_PATH makes Grafana serve under
+      # /grafana itself. No websocket middleware either — Traefik proxies the
+      # Upgrade handshake natively, and forcing those headers on every request
+      # breaks the non-websocket ones.
       - traefik.http.services.grafana.loadbalancer.server.port=3000
+      - traefik.docker.network=monitoring-network
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
@@ -277,9 +295,9 @@ services:
       - traefik.http.routers.alertmanager.rule=PathPrefix(`/alertmanager`)
       - traefik.http.routers.alertmanager.entrypoints=web
       - traefik.http.routers.alertmanager.priority=100
-      - traefik.http.middlewares.alertmanager-strip-prefix.stripprefix.prefixes=/alertmanager
-      - traefik.http.routers.alertmanager.middlewares=alertmanager-strip-prefix@docker
+      # No stripprefix: --web.route-prefix=/alertmanager, same as Prometheus.
       - traefik.http.services.alertmanager.loadbalancer.server.port=9093
+      - traefik.docker.network=monitoring-network
     mem_limit: 128M
     cpus: '0.25'
     networks:
@@ -302,12 +320,20 @@ secrets:
     file: ./secrets/grafana_admin_password
   telegram_token:
     file: ./secrets/telegram_token
+  traefik_dashboard_users:
+    file: ./secrets/traefik_dashboard_users
 
+# Names are pinned (no compose project prefix) so the traefik.docker.network
+# labels above match the real Docker network names.
 networks:
   public-network:
+    name: public-network
   private-network:
+    name: private-network
     internal: true
   db-network:
+    name: db-network
     internal: true
   monitoring-network:
+    name: monitoring-network
     internal: true
