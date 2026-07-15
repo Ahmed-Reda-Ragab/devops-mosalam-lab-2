@@ -98,7 +98,10 @@ services:
       retries: 3
       start_period: 30s
   traefik:
-    image: traefik:v3.0.0
+    # v3.0.0 hardcoded Docker API 1.24, which Docker Engine 28+/29+ refuses
+    # (minimum 1.44). Auto-negotiation of the API version landed in v3.6.1, so
+    # do not pin below that.
+    image: traefik:v3.7.7
     restart: unless-stopped
     command:
       - --api.dashboard=true
