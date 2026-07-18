@@ -386,6 +386,7 @@ services:
     networks:
       - private-network
       - db-network
+      - public-network
 volumes:
   db_data:
   prometheus-data:
