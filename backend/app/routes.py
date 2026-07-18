@@ -3,9 +3,10 @@ from sqlalchemy.orm import Session
 
 from . import crud, database, schemas
 from .cache import cache_service
+import socket
 
 router = APIRouter(prefix="/api")
-
+container_id = socket.gethostname()
 
 def _serialize_task(task) -> dict:
     status_value = task.status.value if getattr(task, "status", None) is not None and hasattr(task.status, "value") else task.status
@@ -28,6 +29,7 @@ def list_tasks(db: Session = Depends(database.get_db)):
             tasks=[schemas.TaskRead.model_validate(item) for item in cached],
             source="cache",
             message="Tasks loaded from cache",
+            container=container_id,
         )
 
     tasks = crud.get_tasks(db)
@@ -37,6 +39,7 @@ def list_tasks(db: Session = Depends(database.get_db)):
         tasks=[schemas.TaskRead.model_validate(item) for item in serialized],
         source="db",
         message="Tasks loaded from database",
+        container=container_id,
     )
 
 

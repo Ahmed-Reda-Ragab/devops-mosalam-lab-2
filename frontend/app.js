@@ -9,6 +9,7 @@ const errorMessage = document.getElementById('error-message');
 const cancelButton = document.getElementById('cancel-update');
 const formTitle = document.getElementById('form-title');
 const cacheStatus = document.getElementById('cache-status');
+const containerIdLabel = document.getElementById('container-id');
 
 let editingTaskId = null;
 
@@ -62,6 +63,10 @@ async function fetchTasks() {
     } else {
       clearCacheStatus();
     }
+    if (payload.container) {
+      document.getElementById('container-id-value').textContent = payload.container;
+    }
+
   } catch (error) {
     showError(error.message);
   }

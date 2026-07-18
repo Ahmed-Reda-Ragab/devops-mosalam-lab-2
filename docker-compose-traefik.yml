@@ -368,23 +368,9 @@ services:
     restart: unless-stopped
     ports:
       - "8083:8080"
-    labels:
-      - traefik.enable=true
-      - traefik.http.routers.adminer.rule=PathPrefix(`/adminer`)
-      - traefik.http.routers.adminer.entrypoints=websecure
-      - traefik.http.routers.adminer.tls=true
-      - traefik.http.routers.adminer.priority=100
-      # No stripprefix: Adminer serves under /adminer itself.
-      - traefik.http.services.adminer.loadbalancer.server.port=8080
-      - traefik.docker.network=private-network
-      # for Adminer, strip the /adminer prefix so it can serve its own /adminer path.
-      - traefik.http.middlewares.adminer-strip.stripprefix.prefixes=/adminer
-      - traefik.http.routers.adminer.middlewares=adminer-strip
-
     mem_limit: 128M
     cpus: '0.25'
     networks:
-      - private-network
       - db-network
       - public-network
 volumes:
