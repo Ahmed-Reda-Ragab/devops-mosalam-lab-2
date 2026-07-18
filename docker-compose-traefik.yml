@@ -52,7 +52,7 @@ services:
       - traefik.http.routers.backend.rule=PathPrefix(`/api`)
       - traefik.http.routers.backend.entrypoints=websecure
       - traefik.http.routers.backend.tls=true
-      - traefik.http.routers.backend.tls.certresolver=le
+      # Self-signed: tls=true with no certresolver -> Traefik's built-in default cert.
       - traefik.http.routers.backend.priority=100
       # No stripprefix: FastAPI's router already mounts under /api, so the
       # backend expects to receive the full /api/... path (as nginx passed it).
@@ -90,7 +90,6 @@ services:
       - traefik.http.routers.frontend.rule=PathPrefix(`/`)
       - traefik.http.routers.frontend.entrypoints=websecure
       - traefik.http.routers.frontend.tls=true
-      - traefik.http.routers.frontend.tls.certresolver=le 
       - traefik.http.routers.frontend.priority=1
       - traefik.http.services.frontend.loadbalancer.server.port=80
       - traefik.docker.network=private-network
@@ -211,12 +210,14 @@ services:
       - --storage.tsdb.path=/prometheus
       - --web.console.libraries=/usr/share/prometheus/console_libraries
       - --web.console.templates=/usr/share/prometheus/consoles
-      - --web.external-url=http://localhost/prometheus
+      - --web.external-url=https://localhost/prometheus
       - --web.route-prefix=/prometheus
     labels:
       - traefik.enable=true
-      - traefik.http.routers.frontend.tls=true
-      - traefik.http.routers.frontend.tls.certresolver=le 
+      # Was mistakenly labelled "frontend" here (copy-paste) — every container
+      # that names router "frontend" gets merged, which triggered Traefik's
+      # "router defined multiple times" error. Correct owner is prometheus.
+      - traefik.http.routers.prometheus.tls=true
       - traefik.http.routers.prometheus.rule=PathPrefix(`/prometheus`)
       - traefik.http.routers.prometheus.entrypoints=websecure
       - traefik.http.routers.prometheus.priority=100
@@ -243,16 +244,18 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
-      GF_SERVER_ROOT_URL: http://localhost/grafana/
+      GF_SERVER_ROOT_URL: https://localhost/grafana/
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     secrets:
       - grafana_admin_password
     labels:
       - traefik.enable=true
       - traefik.http.routers.grafana.rule=PathPrefix(`/grafana`)
-      - traefik.http.routers.grafana.entrypoints=web
-      - traefik.http.routers.frontend.tls=true
-      - traefik.http.routers.frontend.tls.certresolver=le
+      # websecure (not web): the web entrypoint redirects to websecure, so a
+      # grafana router only on web would bounce to https with no matching router.
+      - traefik.http.routers.grafana.entrypoints=websecure
+      # Was mistakenly labelled "frontend" here (copy-paste). Correct owner is grafana.
+      - traefik.http.routers.grafana.tls=true
       - traefik.http.routers.grafana.priority=100
       # No stripprefix: GF_SERVER_SERVE_FROM_SUB_PATH makes Grafana serve under
       # /grafana itself. No websocket middleware either — Traefik proxies the
@@ -311,14 +314,13 @@ services:
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
-      - --web.external-url=http://localhost/alertmanager
+      - --web.external-url=https://localhost/alertmanager
       - --web.route-prefix=/alertmanager
     labels:
       - traefik.enable=true
       - traefik.http.routers.alertmanager.rule=PathPrefix(`/alertmanager`)
       - traefik.http.routers.alertmanager.entrypoints=websecure
       - traefik.http.routers.alertmanager.tls=true
-      - traefik.http.routers.alertmanager.tls.certresolver=le
       - traefik.http.routers.alertmanager.priority=100
       # No stripprefix: --web.route-prefix=/alertmanager, same as Prometheus.
       - traefik.http.services.alertmanager.loadbalancer.server.port=9093
