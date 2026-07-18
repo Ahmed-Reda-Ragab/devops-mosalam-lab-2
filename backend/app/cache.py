@@ -2,9 +2,22 @@ import json
 import logging
 import os
 import time
+from datetime import date, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _json_default(obj: Any) -> Any:
+    """Fallback encoder for types json.dumps can't handle natively.
+
+    Task rows carry datetime created_at/updated_at columns. ISO-8601 strings
+    round-trip cleanly: on a cache hit json.loads yields the string back and
+    Pydantic's TaskRead parses it into a datetime again.
+    """
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
 
 
 class InMemoryCache:
@@ -75,7 +88,7 @@ class MemcachedCache:
         if self._client is None:
             return
         try:
-            payload = json.dumps(value)
+            payload = json.dumps(value, default=_json_default)
             self._client.set(key, payload, expire=ttl or self.default_ttl)
             logger.debug("Memcached SET %s", key)
         except Exception as e:
@@ -147,7 +160,7 @@ class RedisCache:
             return
 
         try:
-            self._client.setex(key, ttl or self.default_ttl, json.dumps(value))
+            self._client.setex(key, ttl or self.default_ttl, json.dumps(value, default=_json_default))
             logger.debug("Redis SET %s", key)
 
         except Exception as e:
