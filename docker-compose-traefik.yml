@@ -44,7 +44,9 @@ services:
     labels:
       - traefik.enable=true
       - traefik.http.routers.backend.rule=PathPrefix(`/api`)
-      - traefik.http.routers.backend.entrypoints=web
+      - traefik.http.routers.backend.entrypoints=websecure
+      - traefik.http.routers.backend.tls=true
+      - traefik.http.routers.backend.tls.certresolver=le
       - traefik.http.routers.backend.priority=100
       # No stripprefix: FastAPI's router already mounts under /api, so the
       # backend expects to receive the full /api/... path (as nginx passed it).
@@ -80,7 +82,9 @@ services:
     labels:
       - traefik.enable=true
       - traefik.http.routers.frontend.rule=PathPrefix(`/`)
-      - traefik.http.routers.frontend.entrypoints=web
+      - traefik.http.routers.frontend.entrypoints=websecure
+      - traefik.http.routers.frontend.tls=true
+      - traefik.http.routers.frontend.tls.certresolver=le 
       - traefik.http.routers.frontend.priority=1
       - traefik.http.services.frontend.loadbalancer.server.port=80
       - traefik.http.services.frontend.loadbalancer.server.port=443
@@ -118,6 +122,8 @@ services:
       # Dedicated entrypoint for the dashboard so it never collides with the
       # backend's /api routes on the web entrypoint.
       - --entrypoints.dashboard.address=:8080
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
     ports:
       - "80:80"
       - "443:443"
