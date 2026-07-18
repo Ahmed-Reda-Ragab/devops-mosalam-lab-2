@@ -59,13 +59,19 @@ class MemcachedCache:
             return None
         if value is None:
             return None
+        if isinstance(value, bytes):
+            try:
+                return json.loads(value.decode("utf-8"))
+            except Exception:
+                return value.decode("utf-8")
         return value
 
     def set(self, key: str, value: Any, ttl: int = 60) -> None:
         if self._client is None:
             return
         try:
-            self._client.set(key, value, expire=ttl or self.default_ttl)
+            payload = json.dumps(value)
+            self._client.set(key, payload, expire=ttl or self.default_ttl)
         except Exception:
             return
 
