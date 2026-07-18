@@ -8,3 +8,4 @@ cryptography==42.0.8
 alembic==1.11.1
 prometheus-fastapi-instrumentator==7.0.0
 pymemcache==4.0.0
+redis>=6.0.0

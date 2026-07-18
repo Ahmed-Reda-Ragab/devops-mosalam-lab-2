@@ -44,6 +44,8 @@ class MemcachedCache:
             from pymemcache.client.base import Client
 
             self._client = Client((host, port), serde=serde)
+            self._client.stats()
+            logger.info("✅ Memcached connected (%s:%s)", host, port)
         except Exception:
             self._client = None
 
@@ -82,6 +84,92 @@ class MemcachedCache:
         except Exception:
             return
 
+class RedisCache:
+    def __init__(self, host: str, port: int, default_ttl: int) -> None:
+        self.default_ttl = default_ttl
+        self._client = None
+
+        try:
+            import redis
+
+            self._client = redis.Redis(
+                host=host,
+                port=port,
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5,
+            )
+
+            self._client.ping()
+
+            logger.info("✅ Redis connected (%s:%s)", host, port)
+
+        except Exception as e:
+            logger.exception("❌ Redis connection failed: %s", e)
+            self._client = None
+
+    def get(self, key: str):
+        if self._client is None:
+            return None
+
+        try:
+            value = self._client.get(key)
+
+            if value is None:
+                logger.debug("Redis MISS %s", key)
+                return None
+
+            logger.debug("Redis HIT %s", key)
+            return json.loads(value)
+
+        except Exception as e:
+            logger.exception("Redis GET error: %s", e)
+            return None
+
+    def set(self, key: str, value: Any, ttl: int = 60):
+        if self._client is None:
+            return
+
+        try:
+            self._client.setex(key, ttl, json.dumps(value))
+            logger.debug("Redis SET %s", key)
+
+        except Exception as e:
+            logger.exception("Redis SET error: %s", e)
+
+    def delete(self, key: str):
+        if self._client is None:
+            return
+
+        try:
+            self._client.delete(key)
+
+        except Exception as e:
+            logger.exception("Redis DELETE error: %s", e)
+
+    def delete_prefix(self, prefix: str):
+        if self._client is None:
+            return
+
+        try:
+            cursor = 0
+
+            while True:
+                cursor, keys = self._client.scan(
+                    cursor=cursor,
+                    match=f"{prefix}*",
+                    count=100,
+                )
+
+                if keys:
+                    self._client.delete(*keys)
+
+                if cursor == 0:
+                    break
+
+        except Exception as e:
+            logger.exception("Redis delete_prefix error: %s", e)
+
 
 class Serde:
     def serialize(self, value: Any) -> bytes:
@@ -99,26 +187,41 @@ serde = Serde()
 class CacheService:
     def __init__(self) -> None:
         backend = os.getenv("CACHE_BACKEND", "memory").lower()
-        if backend == "memcached":
-            self.backend = MemcachedCache(
+
+        logger.info("Cache backend: %s", backend)
+
+        ttl = int(os.getenv("CACHE_TTL_SECONDS", "60"))
+
+        if backend == "redis":
+
+            cache = RedisCache(
+                host=os.getenv("REDIS_HOST", "redis"),
+                port=int(os.getenv("REDIS_PORT", "6379")),
+                default_ttl=ttl,
+            )
+
+            self.backend = cache if cache._client else InMemoryCache()
+
+            if cache._client is None:
+                logger.warning("⚠ Falling back to InMemory cache")
+
+        elif backend == "memcached":
+
+            cache = MemcachedCache(
                 host=os.getenv("CACHE_HOST", "memcached"),
                 port=int(os.getenv("CACHE_PORT", "11211")),
-                default_ttl=int(os.getenv("CACHE_TTL_SECONDS", "60")),
+                default_ttl=ttl,
             )
+
+            self.backend = cache if cache._client else InMemoryCache()
+
+            if cache._client is None:
+                logger.warning("⚠ Falling back to InMemory cache")
+
         else:
+
+            logger.info("Using InMemory cache")
+
             self.backend = InMemoryCache()
-
-    def get(self, key: str) -> Any | None:
-        return self.backend.get(key)
-
-    def set(self, key: str, value: Any, ttl: int | None = None) -> None:
-        self.backend.set(key, value, ttl=ttl or int(os.getenv("CACHE_TTL_SECONDS", "60")))
-
-    def delete(self, key: str) -> None:
-        self.backend.delete(key)
-
-    def delete_prefix(self, prefix: str) -> None:
-        self.backend.delete_prefix(prefix)
-
 
 cache_service = CacheService()
