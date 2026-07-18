@@ -92,7 +92,11 @@ services:
     networks:
       - private-network
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost"]
+      # Use curl against 127.0.0.1 (not localhost): nginx listens on IPv4 only,
+      # but in Alpine `localhost` resolves to IPv6 ::1 first, so BusyBox wget got
+      # "connection refused" and the container was wrongly marked unhealthy —
+      # which made Traefik refuse to publish the frontend router (404 on /).
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1/"]
       interval: 30s
       timeout: 10s
       retries: 3
