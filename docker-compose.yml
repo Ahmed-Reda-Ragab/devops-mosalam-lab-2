@@ -35,8 +35,14 @@ services:
       context: ./backend
     depends_on:
       - db
+      - memcached
     env_file:
       - ./.env
+    environment:
+      CACHE_BACKEND: memcached
+      CACHE_HOST: memcached
+      CACHE_PORT: 11211
+      CACHE_TTL_SECONDS: 60
     secrets:
       - db_password
     expose:
@@ -80,6 +86,26 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  memcached:
+    image: memcached:1.6-alpine
+    container_name: memcached
+    restart: unless-stopped
+    command:
+      - memcached
+      - -m
+      - "256"
+      - -c
+      - "1024"
+      - -t
+      - "2"
+    ports:
+      - "11211:11211"
+    mem_limit: 512m
+    cpus: 0.5
+    networks:
+      - db-network
+
 
   nginx:
     image: nginx:1.27.2

@@ -118,6 +118,12 @@ button.secondary {
   margin-bottom: 12px;
 }
 
+.cache-status {
+  margin: 0 0 12px;
+  color: #2563eb;
+  font-weight: 600;
+}
+
 .toolbar {
   display: flex;
   align-items: baseline;

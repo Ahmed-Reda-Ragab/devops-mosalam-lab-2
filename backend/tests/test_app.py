@@ -1,3 +1,4 @@
+from app.cache import InMemoryCache
 from app.main import app
 from fastapi.testclient import TestClient
 
@@ -25,3 +26,13 @@ def test_metrics_endpoint_exposed():
 
 def test_unknown_route_returns_404():
     assert client.get("/definitely-not-a-route").status_code == 404
+
+
+def test_in_memory_cache_round_trip_and_invalidation():
+    cache = InMemoryCache()
+    cache.set("tasks:all", [{"id": 1, "name": "demo"}], ttl=30)
+
+    assert cache.get("tasks:all") == [{"id": 1, "name": "demo"}]
+
+    cache.delete("tasks:all")
+    assert cache.get("tasks:all") is None

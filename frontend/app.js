@@ -8,6 +8,7 @@ const taskList = document.getElementById('task-list');
 const errorMessage = document.getElementById('error-message');
 const cancelButton = document.getElementById('cancel-update');
 const formTitle = document.getElementById('form-title');
+const cacheStatus = document.getElementById('cache-status');
 
 let editingTaskId = null;
 
@@ -21,6 +22,22 @@ function showError(message) {
 function clearError() {
   errorMessage.textContent = '';
   errorMessage.classList.add('hidden');
+}
+
+function showCacheStatus(message) {
+  if (!cacheStatus) {
+    return;
+  }
+  cacheStatus.textContent = message;
+  cacheStatus.classList.remove('hidden');
+}
+
+function clearCacheStatus() {
+  if (!cacheStatus) {
+    return;
+  }
+  cacheStatus.textContent = '';
+  cacheStatus.classList.add('hidden');
 }
 
 function resetForm() {
@@ -37,8 +54,14 @@ async function fetchTasks() {
     if (!response.ok) {
       throw new Error('Unable to load tasks');
     }
-    const tasks = await response.json();
+    const payload = await response.json();
+    const tasks = Array.isArray(payload) ? payload : payload.tasks || [];
     renderTasks(tasks);
+    if (payload.source && payload.message) {
+      showCacheStatus(payload.message);
+    } else {
+      clearCacheStatus();
+    }
   } catch (error) {
     showError(error.message);
   }

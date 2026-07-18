@@ -35,8 +35,14 @@ services:
       context: ./backend
     depends_on:
       - db
+      - memcached
     env_file:
       - ./.env
+    environment:
+      CACHE_BACKEND: memcached
+      CACHE_HOST: memcached
+      CACHE_PORT: 11211
+      CACHE_TTL_SECONDS: 60
     secrets:
       - db_password
     expose:
@@ -323,6 +329,31 @@ services:
       - monitoring-network
       - public-network
 
+  memcached:
+    image: memcached:1.6-alpine
+    container_name: memcached
+    restart: unless-stopped
+    command:
+      - memcached
+      - -m
+      - "256"          # Memory (MB)
+      - -c
+      - "1024"         # Max connections
+      - -t
+      - "2"            # Number of threads
+    ports:
+      - "11211:11211"
+
+    healthcheck:
+      test: ["CMD-SHELL", "echo stats | nc localhost 11211 | grep STAT || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    mem_limit: 512m
+    cpus: 0.5
+    networks:
+      - db-network
 volumes:
   db_data:
   prometheus-data:

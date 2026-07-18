@@ -32,3 +32,9 @@ class TaskRead(TaskBase):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TaskListResponse(BaseModel):
+    tasks: list[TaskRead]
+    source: str
+    message: str
