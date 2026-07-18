@@ -209,8 +209,10 @@ services:
       - --web.route-prefix=/prometheus
     labels:
       - traefik.enable=true
+      - traefik.http.routers.frontend.tls=true
+      - traefik.http.routers.frontend.tls.certresolver=le 
       - traefik.http.routers.prometheus.rule=PathPrefix(`/prometheus`)
-      - traefik.http.routers.prometheus.entrypoints=web
+      - traefik.http.routers.prometheus.entrypoints=websecure
       - traefik.http.routers.prometheus.priority=100
       # No stripprefix: --web.route-prefix=/prometheus means Prometheus itself
       # serves under /prometheus and expects that prefix in the request path.
@@ -243,6 +245,8 @@ services:
       - traefik.enable=true
       - traefik.http.routers.grafana.rule=PathPrefix(`/grafana`)
       - traefik.http.routers.grafana.entrypoints=web
+      - traefik.http.routers.frontend.tls=true
+      - traefik.http.routers.frontend.tls.certresolver=le
       - traefik.http.routers.grafana.priority=100
       # No stripprefix: GF_SERVER_SERVE_FROM_SUB_PATH makes Grafana serve under
       # /grafana itself. No websocket middleware either — Traefik proxies the
@@ -306,7 +310,9 @@ services:
     labels:
       - traefik.enable=true
       - traefik.http.routers.alertmanager.rule=PathPrefix(`/alertmanager`)
-      - traefik.http.routers.alertmanager.entrypoints=web
+      - traefik.http.routers.alertmanager.entrypoints=websecure
+      - traefik.http.routers.alertmanager.tls=true
+      - traefik.http.routers.alertmanager.tls.certresolver=le
       - traefik.http.routers.alertmanager.priority=100
       # No stripprefix: --web.route-prefix=/alertmanager, same as Prometheus.
       - traefik.http.services.alertmanager.loadbalancer.server.port=9093
