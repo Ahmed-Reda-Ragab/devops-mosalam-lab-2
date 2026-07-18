@@ -128,12 +128,18 @@ services:
       - --entrypoints.dashboard.address=:8080
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
+        # Let's Encrypt
+      - --certificatesresolvers.le.acme.email=info@el-programmer.click
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.le.acme.httpchallenge=true
+      - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
     ports:
       - "80:80"
       - "443:443"
       - "8081:8080" # Traefik dashboard (basic auth)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-letsencrypt:/letsencrypt
     secrets:
       - traefik_dashboard_users
     labels:
@@ -356,12 +362,37 @@ services:
     cpus: 0.5
     networks:
       - db-network
+
+  adminer:
+    image: adminer:4.8.1
+    restart: unless-stopped
+    ports:
+      - "8083:8080"
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.adminer.rule=PathPrefix(`/adminer`)
+      - traefik.http.routers.adminer.entrypoints=websecure
+      - traefik.http.routers.adminer.tls=true
+      - traefik.http.routers.adminer.priority=100
+      # No stripprefix: Adminer serves under /adminer itself.
+      - traefik.http.services.adminer.loadbalancer.server.port=8080
+      - traefik.docker.network=private-network
+      # for Adminer, strip the /adminer prefix so it can serve its own /adminer path.
+      - traefik.http.middlewares.adminer-strip.stripprefix.prefixes=/adminer
+      - traefik.http.routers.adminer.middlewares=adminer-strip
+
+    mem_limit: 128M
+    cpus: '0.25'
+    networks:
+      - private-network
+      - db-network
 volumes:
   db_data:
   prometheus-data:
   grafana-data:
   loki-data:
   alertmanager-data:
+  traefik-letsencrypt:
 
 secrets:
   mysql_root_password:

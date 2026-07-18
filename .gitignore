@@ -12,3 +12,6 @@ backups/
 # Python
 __pycache__/
 *.pyc
+
+traefik/acme.json
+traefik/traefik.yml
