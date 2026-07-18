@@ -1,9 +1,10 @@
 import json
+import logging
 import os
 import time
-from typing import Any, Optional
+from typing import Any
 
-from .config import settings
+logger = logging.getLogger(__name__)
 
 
 class InMemoryCache:
@@ -64,7 +65,7 @@ class MemcachedCache:
         if self._client is None:
             return
         try:
-            self._client.set(key, value, expire=ttl)
+            self._client.set(key, value, expire=ttl or self.default_ttl)
         except Exception:
             return
 
@@ -131,7 +132,7 @@ class RedisCache:
             return
 
         try:
-            self._client.setex(key, ttl, json.dumps(value))
+            self._client.setex(key, ttl or self.default_ttl, json.dumps(value))
             logger.debug("Redis SET %s", key)
 
         except Exception as e:
@@ -190,14 +191,13 @@ class CacheService:
 
         logger.info("Cache backend: %s", backend)
 
-        ttl = int(os.getenv("CACHE_TTL_SECONDS", "60"))
+        self.default_ttl = int(os.getenv("CACHE_TTL_SECONDS", "60"))
 
         if backend == "redis":
-
             cache = RedisCache(
                 host=os.getenv("REDIS_HOST", "redis"),
                 port=int(os.getenv("REDIS_PORT", "6379")),
-                default_ttl=ttl,
+                default_ttl=self.default_ttl,
             )
 
             self.backend = cache if cache._client else InMemoryCache()
@@ -206,11 +206,10 @@ class CacheService:
                 logger.warning("⚠ Falling back to InMemory cache")
 
         elif backend == "memcached":
-
             cache = MemcachedCache(
                 host=os.getenv("CACHE_HOST", "memcached"),
                 port=int(os.getenv("CACHE_PORT", "11211")),
-                default_ttl=ttl,
+                default_ttl=self.default_ttl,
             )
 
             self.backend = cache if cache._client else InMemoryCache()
@@ -219,9 +218,20 @@ class CacheService:
                 logger.warning("⚠ Falling back to InMemory cache")
 
         else:
-
             logger.info("Using InMemory cache")
-
             self.backend = InMemoryCache()
+
+    def get(self, key: str) -> Any | None:
+        return self.backend.get(key)
+
+    def set(self, key: str, value: Any, ttl: int | None = None) -> None:
+        self.backend.set(key, value, ttl=ttl or self.default_ttl)
+
+    def delete(self, key: str) -> None:
+        self.backend.delete(key)
+
+    def delete_prefix(self, prefix: str) -> None:
+        self.backend.delete_prefix(prefix)
+
 
 cache_service = CacheService()
