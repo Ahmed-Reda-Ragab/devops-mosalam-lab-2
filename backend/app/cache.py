@@ -44,10 +44,14 @@ class MemcachedCache:
         try:
             from pymemcache.client.base import Client
 
-            self._client = Client((host, port), serde=serde)
+            # No custom serde: set()/get() below do json.dumps/json.loads
+            # themselves. Passing a serde with the wrong signature made every
+            # store raise inside pymemcache and get swallowed silently.
+            self._client = Client((host, port))
             self._client.stats()
             logger.info("✅ Memcached connected (%s:%s)", host, port)
-        except Exception:
+        except Exception as e:
+            logger.exception("❌ Memcached connection failed: %s", e)
             self._client = None
 
     def get(self, key: str) -> Any | None:
@@ -55,7 +59,8 @@ class MemcachedCache:
             return None
         try:
             value = self._client.get(key)
-        except Exception:
+        except Exception as e:
+            logger.exception("Memcached GET error for %s: %s", key, e)
             return None
         if value is None:
             return None
@@ -72,7 +77,9 @@ class MemcachedCache:
         try:
             payload = json.dumps(value)
             self._client.set(key, payload, expire=ttl or self.default_ttl)
-        except Exception:
+            logger.debug("Memcached SET %s", key)
+        except Exception as e:
+            logger.exception("Memcached SET error for %s: %s", key, e)
             return
 
     def delete(self, key: str) -> None:
@@ -80,7 +87,8 @@ class MemcachedCache:
             return
         try:
             self._client.delete(key)
-        except Exception:
+        except Exception as e:
+            logger.exception("Memcached DELETE error for %s: %s", key, e)
             return
 
     def delete_prefix(self, prefix: str) -> None:
@@ -88,7 +96,8 @@ class MemcachedCache:
             return
         try:
             self._client.delete_many([prefix])
-        except Exception:
+        except Exception as e:
+            logger.exception("Memcached delete_prefix error for %s: %s", prefix, e)
             return
 
 class RedisCache:
@@ -176,19 +185,6 @@ class RedisCache:
 
         except Exception as e:
             logger.exception("Redis delete_prefix error: %s", e)
-
-
-class Serde:
-    def serialize(self, value: Any) -> bytes:
-        return json.dumps(value).encode("utf-8")
-
-    def deserialize(self, value: bytes) -> Any:
-        if value is None:
-            return None
-        return json.loads(value.decode("utf-8"))
-
-
-serde = Serde()
 
 
 class CacheService:
