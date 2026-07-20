@@ -209,13 +209,16 @@ volumes:
   proxysql_data:
 
 networks:
+  # Shared with the main app stack (../docker-compose-traefik.yml) so the
+  # backend can reach proxysql:6033 and memcached. Create it once:
+  #   docker network create db-network
   db-network:
-    driver: bridge
+    external: true
+    name: db-network
   # Shared with the main stack (Traefik / nginx). Create it once with:
   #   docker network create public-network
   public-network:
-    external: true
-
+  
 secrets:
   mysql_root_password:
     file: ../secrets/mysql_root_password
