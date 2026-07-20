@@ -6,7 +6,7 @@ services:
   # shared external "db-network" (see the networks section below).
   backend:
     build:
-      context: ./backend
+      context: ../backend
     # db + memcached are external (database stack); cross-project depends_on
     # is not possible, so start the database stack first. The app tolerates a
     # not-yet-ready DB: the engine connects lazily and pool_pre_ping retries.
@@ -54,7 +54,7 @@ services:
 
   frontend:
     build:
-      context: ./frontend
+      context: ../frontend
     depends_on:
       - backend
     expose:
@@ -182,8 +182,8 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -245,8 +245,8 @@ services:
       - traefik.docker.network=monitoring-network
     volumes:
       - grafana-data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
     mem_limit: 256M
     cpus: '0.5'
     healthcheck:
@@ -276,7 +276,7 @@ services:
     depends_on:
       - loki
     volumes:
-      - ./promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - ../promtail/promtail-config.yml:/etc/promtail/config.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     mem_limit: 128M
     cpus: '0.25'
@@ -287,7 +287,7 @@ services:
     image: prom/alertmanager:v0.27.0
     restart: unless-stopped
     volumes:
-      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ../alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager-data:/alertmanager
     secrets:
       - telegram_token
@@ -321,13 +321,13 @@ volumes:
 
 secrets:
   db_password:
-    file: ./secrets/db_password
+    file: ../secrets/db_password
   grafana_admin_password:
-    file: ./secrets/grafana_admin_password
+    file: ../secrets/grafana_admin_password
   telegram_token:
-    file: ./secrets/telegram_token
+    file: ../secrets/telegram_token
   traefik_dashboard_users:
-    file: ./secrets/traefik_dashboard_users
+    file: ../secrets/traefik_dashboard_users
 
 # Names are pinned (no compose project prefix) so the traefik.docker.network
 # labels above match the real Docker network names.
