@@ -18,8 +18,12 @@ def create_task(db: Session, task: schemas.TaskCreate) -> models.Task:
         status=task.status.value if task.status else None,
     )
     db.add(db_task)
-    db.commit()
+    # Flush to send the INSERT and populate the primary key
+    db.flush()
+    # Refresh to load any server-side defaults (timestamps, enums)
     db.refresh(db_task)
+    # Commit the transaction
+    db.commit()
     return db_task
 
 
