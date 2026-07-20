@@ -1,0 +1,225 @@
+####################################################
+#                 DATABASE STACK
+#
+#  mysql-primary  : read/write source of truth
+#  mysql-replica  : read-only, GTID replication
+#  proxysql       : single entrypoint, R/W split
+#  mysql-backup   : nightly mysqldump + retention
+#  adminer        : web DB UI
+#  memcached      : application cache
+####################################################
+
+services:
+
+  ####################################################
+  #  MySQL Primary  (read/write)
+  ####################################################
+  mysql-primary:
+    image: mysql:8.0
+    container_name: mysql-primary
+    restart: unless-stopped
+    command:
+      - --defaults-file=/etc/mysql/my.cnf
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - mysql_root_password
+      - db_password
+      - replication_password
+    volumes:
+      # Database files
+      - mysql_primary_data:/var/lib/mysql
+      # Custom config
+      - ../mysql/primary/my.cnf:/etc/mysql/my.cnf:ro
+      # Application schema (first init only) -> replicates to the replica
+      - ../backend/init.sql:/docker-entrypoint-initdb.d/00-schema.sql:ro
+      # Creates replication / monitor / app accounts (first init only)
+      - ../mysql/primary/init/10-replication.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h localhost -uroot -p"$$(cat /run/secrets/mysql_root_password)" --silent
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    mem_limit: 512M
+    cpus: 1
+    logging:
+      driver: local
+    networks:
+      - db-network
+
+  ####################################################
+  #  MySQL Replica  (read-only)
+  ####################################################
+  mysql-replica:
+    image: mysql:8.0
+    container_name: mysql-replica
+    restart: unless-stopped
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+    command:
+      - --defaults-file=/etc/mysql/my.cnf
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+    secrets:
+      - mysql_root_password
+      - replication_password
+    volumes:
+      - mysql_replica_data:/var/lib/mysql
+      - ../mysql/replica/my.cnf:/etc/mysql/my.cnf:ro
+      # Points the replica at the primary and starts replication (first init only)
+      - ../mysql/replica/init/10-start-replica.sh:/docker-entrypoint-initdb.d/10-start-replica.sh:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h localhost -uroot -p"$$(cat /run/secrets/mysql_root_password)" --silent
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    mem_limit: 512M
+    cpus: 1
+    logging:
+      driver: local
+    networks:
+      - db-network
+
+  ####################################################
+  #  ProxySQL  (apps connect here, not to MySQL directly)
+  ####################################################
+  proxysql:
+    build:
+      context: ../proxysql
+    container_name: proxysql
+    restart: unless-stopped
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+      mysql-replica:
+        condition: service_healthy
+    environment:
+      # Used by startup.sh to create the matching frontend user
+      DB_USERNAME: ${DB_USERNAME}
+    ports:
+      - "6033:6033"              # MySQL protocol  (application traffic)
+      - "127.0.0.1:6032:6032"    # Admin interface (localhost only)
+    secrets:
+      - db_password
+    volumes:
+      - ../proxysql/proxysql.cnf:/etc/proxysql.cnf:ro
+      - ../proxysql/init.sql:/etc/proxysql-init.sql:ro
+      - ../proxysql/startup.sh:/startup.sh:ro
+      - proxysql_data:/var/lib/proxysql
+    entrypoint:
+      - /bin/sh
+      - /startup.sh
+    mem_limit: 256M
+    cpus: 0.5
+    logging:
+      driver: local
+    networks:
+      - db-network
+
+  ####################################################
+  #  Backup  (nightly mysqldump + 30-day retention)
+  ####################################################
+  mysql-backup:
+    build:
+      context: ../backup-mysql
+    container_name: mysql-backup
+    restart: unless-stopped
+    depends_on:
+      mysql-primary:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql-primary
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+    secrets:
+      - mysql_root_password
+    volumes:
+      - mysql_backup:/backup/backups
+      - mysql_backup_logs:/backup/logs
+    healthcheck:
+      test:
+        - CMD
+        - test
+        - -f
+        - /backup/scripts/backup.sh
+      interval: 30s
+      retries: 3
+    mem_limit: 256M
+    cpus: 0.5
+    networks:
+      - db-network
+
+  ####################################################
+  #  Adminer  (web DB UI)
+  ####################################################
+  adminer:
+    image: adminer:4.8.1
+    restart: unless-stopped
+    ports:
+      - "8083:8080"
+    mem_limit: 128m
+    cpus: 0.25
+    networks:
+      - db-network
+      - public-network
+
+  ####################################################
+  #  Memcached  (application cache)
+  ####################################################
+  memcached:
+    image: memcached:1.6-alpine
+    restart: unless-stopped
+    command:
+      - memcached
+      - -m
+      - "256"
+      - -c
+      - "1024"
+      - -t
+      - "2"
+    ports:
+      - "11211:11211"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - echo stats | nc localhost 11211 | grep STAT || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    mem_limit: 512m
+    cpus: 0.5
+    networks:
+      - db-network
+
+volumes:
+  mysql_primary_data:
+  mysql_replica_data:
+  mysql_backup:
+  mysql_backup_logs:
+  proxysql_data:
+
+networks:
+  db-network:
+    driver: bridge
+  # Shared with the main stack (Traefik / nginx). Create it once with:
+  #   docker network create public-network
+  public-network:
+    external: true
+
+secrets:
+  mysql_root_password:
+    file: ../secrets/mysql_root_password
+  db_password:
+    file: ../secrets/db_password
+  replication_password:
+    file: ../secrets/replication_password

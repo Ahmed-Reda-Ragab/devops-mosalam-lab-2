@@ -1,0 +1,5 @@
+# m h dom mon dow  command
+# Nightly full backup at 02:00
+0 2 * * * /backup/scripts/backup.sh >> /backup/logs/backup.log 2>&1
+# Prune old backups (keep last 30) at 02:30
+30 2 * * * /backup/scripts/cleanup.sh >> /backup/logs/cleanup.log 2>&1

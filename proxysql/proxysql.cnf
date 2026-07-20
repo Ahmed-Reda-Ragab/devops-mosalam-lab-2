@@ -1,0 +1,18 @@
+datadir="/var/lib/proxysql"
+
+admin_variables=
+{
+    # NOTE: admin interface is published only on 127.0.0.1 in compose.
+    admin_credentials="admin:admin"
+    mysql_ifaces="0.0.0.0:6032"
+}
+
+mysql_variables=
+{
+    threads=4
+    max_connections=2048
+    interfaces="0.0.0.0:6033"
+    # Must match the 'monitor' account created by mysql/primary/init/10-replication.sh
+    monitor_username="monitor"
+    monitor_password="monitor123"
+}
