@@ -1,4 +1,4 @@
-FROM proxysql/proxysql:2.7
+FROM proxysql/proxysql:2.7.3
 
 LABEL maintainer="El Programmer"
 
