@@ -33,49 +33,39 @@ echo "=================================="
 ##########################################
 
 DATABASES=$(mysql \
--h"$MYSQL_HOST" \
--P"$MYSQL_PORT" \
--u"$MYSQL_USER" \
--p"$MYSQL_PASSWORD" \
--N \
--e "SHOW DATABASES;" \
-| grep -Ev "(information_schema|performance_schema|mysql|sys)")
+  -h"$MYSQL_HOST" \
+  -P"$MYSQL_PORT" \
+  -u"$MYSQL_USER" \
+  -p"$MYSQL_PASSWORD" \
+  --ssl-mode=DISABLED \
+  -N \
+  -e "SHOW DATABASES;" \
+  | grep -Ev "(information_schema|performance_schema|mysql|sys)")
 
 ##########################################
 # Backup Loop
 ##########################################
 
 for DB in $DATABASES
-do
+ do
 
-echo ""
+ echo ""
 
-echo "Backing up : $DB"
+ echo "Backing up : $DB"
 
-mysqldump \
-
--h"$MYSQL_HOST" \
-
--P"$MYSQL_PORT" \
-
--u"$MYSQL_USER" \
-
--p"$MYSQL_PASSWORD" \
-
---single-transaction \
-
---quick \
-
---routines \
-
---events \
-
---triggers \
-
-"$DB" \
-
-| gzip > "$BACKUP_DIR/$DB.sql.gz"
-
+ mysqldump \
+  -h"$MYSQL_HOST" \
+  -P"$MYSQL_PORT" \
+  -u"$MYSQL_USER" \
+  -p"$MYSQL_PASSWORD" \
+  --ssl-mode=DISABLED \
+  --single-transaction \
+  --quick \
+  --routines \
+  --events \
+  --triggers \
+  "$DB" \
+  | gzip > "$BACKUP_DIR/$DB.sql.gz"
 sha256sum "$BACKUP_DIR/$DB.sql.gz" >> "$BACKUP_DIR/SHA256SUMS"
 echo "Done : $DB"
 
