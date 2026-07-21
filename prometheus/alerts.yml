@@ -1,3 +1,14 @@
+# ############################################################################
+#  ALERTING RULES  (task requirement 8: "Alerting on the Monitoring Layer")
+#  Mapping of the required alerts -> the rule that implements each one:
+#    1) API is slow ............. BackendHighLatencyP95  (+ BackendHighErrorRate)
+#    2) DB usage is high ........ ContainerNearMemoryLimit / ContainerCPUThrottling
+#                                 (they match every container incl. mysql-primary)
+#    3) A container went down ... TargetDown (scraped services) + DatabaseDown /
+#                                 FrontendDown / ReverseProxyDown / ContainerRestarting
+#    4) Memory almost full ...... ContainerNearMemoryLimit + HostHighMemory
+#    5) SSL about to expire ..... SSLCertificateExpiringSoon (via blackbox probe)
+# ############################################################################
 groups:
   # --- Availability ---
   # TargetDown covers everything Prometheus scrapes (prometheus, cadvisor,
@@ -17,15 +28,21 @@ groups:
 
       # cAdvisor stops reporting a container the moment it is gone, so absent()
       # over its compose-service label tells us the container is not running.
+      #
+      # The DB service name differs per topology: it is "db" in the legacy
+      # single-file stack (docker-compose.yml) and "mysql-primary" in the split
+      # database stack (compose/docker-compose.database.yml). We match BOTH with
+      # a regex so this fires only when neither container exists — otherwise it
+      # would false-positive permanently on whichever stack is not deployed.
       - alert: DatabaseDown
-        expr: absent(container_last_seen{container_label_com_docker_compose_service="db"})
+        expr: absent(container_last_seen{container_label_com_docker_compose_service=~"db|mysql-primary"})
         for: 2m
         labels:
           severity: critical
           service: db
         annotations:
           summary: 'Database (MySQL) container is down'
-          description: 'cAdvisor has not seen the db container for over 2 minutes — MySQL is not running.'
+          description: 'cAdvisor has not seen the primary MySQL container for over 2 minutes — the database is not running.'
 
       - alert: FrontendDown
         expr: absent(container_last_seen{container_label_com_docker_compose_service="frontend"})
@@ -37,15 +54,20 @@ groups:
           summary: 'Frontend container is down'
           description: 'cAdvisor has not seen the frontend container for over 2 minutes — the site is not being served.'
 
-      - alert: NginxDown
-        expr: absent(container_last_seen{container_label_com_docker_compose_service="nginx"})
+      # Edge reverse proxy. The legacy stack fronted the site with "nginx";
+      # the current stack uses "traefik". Match both so the rule stays correct
+      # across topologies and never false-positives on the absent one. (Traefik
+      # is also scraped, so its outage is caught by TargetDown too — this is the
+      # belt-and-suspenders container-level check.)
+      - alert: ReverseProxyDown
+        expr: absent(container_last_seen{container_label_com_docker_compose_service=~"nginx|traefik"})
         for: 2m
         labels:
           severity: critical
-          service: nginx
+          service: proxy
         annotations:
-          summary: 'Nginx reverse proxy is down'
-          description: 'cAdvisor has not seen the nginx container for over 2 minutes — the whole site is unreachable from outside.'
+          summary: 'Edge reverse proxy (Traefik/Nginx) is down'
+          description: 'cAdvisor has not seen the reverse-proxy container for over 2 minutes — the whole site is unreachable from outside.'
 
   # --- Containers (cAdvisor) ---
   - name: containers
@@ -159,6 +181,31 @@ groups:
         annotations:
           summary: 'High memory usage on host'
           description: 'Host memory usage is {{ $value | printf "%.1f" }}%.'
+
+  # --- HTTPS / TLS ---
+  # Fed by the blackbox exporter probing https://el-programmer.click (served the
+  # real Let's Encrypt cert via Traefik). probe_ssl_earliest_cert_expiry is the
+  # real CA cert's expiry, so SSLCertificateExpiringSoon gives genuine warning
+  # ahead of a Let's Encrypt renewal failure.
+  - name: tls
+    rules:
+      - alert: HTTPSProbeFailed
+        expr: probe_success == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'HTTPS probe failed for {{ $labels.instance }}'
+          description: 'The HTTPS probe for {{ $labels.instance }} has failed for over 2 minutes.'
+
+      - alert: SSLCertificateExpiringSoon
+        expr: probe_ssl_earliest_cert_expiry - time() < 7 * 24 * 3600
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: 'TLS certificate expires soon for {{ $labels.instance }}'
+          description: 'The TLS certificate for {{ $labels.instance }} expires in less than 7 days.'
 
   # --- Monitoring self-health ---
   # These make sure the alerting pipeline itself is healthy. If Prometheus can't

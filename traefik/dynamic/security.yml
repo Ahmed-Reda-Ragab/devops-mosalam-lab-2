@@ -1,0 +1,28 @@
+# ============================================================================
+#  Security response headers (hardening at the proxy layer).
+#  Attached to the backend router via "security-headers@file". Sets browser
+#  protections (HSTS, anti-clickjacking, MIME sniffing, XSS) on every response.
+# ============================================================================
+http:
+
+  middlewares:
+
+    security-headers:
+
+      headers:
+
+        browserXssFilter: true # enables the Cross-site scripting (XSS) filter built into most recent web browsers.
+
+        contentTypeNosniff: true # prevents the browser from interpreting files as a different MIME type to what is specified in the Content-Type HTTP header.
+
+        frameDeny: true # disallowing the site to be framed.
+
+        forceSTSHeader: true # forces use HTTPS for all future requests to the site for a specified time period, even if the user attempts to access the site over HTTP.
+
+        stsSeconds: 31536000 # save rules on browser for 1 year in seconds
+
+        stsIncludeSubdomains: true # applies the rule to all subdomains
+
+        customResponseHeaders: # custom headers to be added to the response
+
+          Server: "" # removes the Server header from the response

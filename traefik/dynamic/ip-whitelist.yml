@@ -1,0 +1,20 @@
+# ============================================================================
+#  Middleware: ip-whitelist  (Block suspicious IPs at the proxy level)
+#  This middleware is attached to the Traefik dashboard router only
+#  (see docker-compose-apps.yml -> traefik.http.routers.dashboard.middlewares
+#   = dashboard-auth@docker,ip-whitelist@file), so the admin dashboard is
+#  reachable only from localhost + private LAN ranges. Public site routers
+#  (frontend/backend) are intentionally left open.
+#  NOTE: in Traefik v3 the middleware was renamed ipWhiteList -> ipAllowList.
+#  The old name still works but logs a deprecation warning, so we use the new
+#  name here (we run traefik:v3.7.7).
+# ============================================================================
+http:
+  middlewares:
+    ip-whitelist:
+      ipAllowList:
+        sourceRange:
+          - 127.0.0.1/32      # localhost (the host machine itself)
+          - 10.0.0.0/8        # private range (RFC1918) for private networks
+          - 172.16.0.0/12     # private range (Docker default bridge subnets)
+          - 192.168.0.0/16    # private range (home / office LAN)

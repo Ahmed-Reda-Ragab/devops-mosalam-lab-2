@@ -11,10 +11,38 @@ services:
       - /var/lib/docker:/var/lib/docker:ro
     command:
       - --docker_only=true
+      # Serve EVERYTHING (UI, /metrics, /healthz) under /cadvisor so the app is
+      # reachable cleanly behind Traefik on the /cadvisor path prefix. NOTE: this
+      # moves the Prometheus endpoint to /cadvisor/metrics and health to
+      # /cadvisor/healthz (both updated below and in prometheus.yml).
+      - --url_base_prefix=/cadvisor
     mem_limit: 256M
     cpus: '0.5'
+    labels:
+      - traefik.enable=true
+      # --- Path route (works on the domain AND the raw IP): /cadvisor ---
+      - traefik.http.routers.cadvisor.rule=PathPrefix(`/cadvisor`)
+      - traefik.http.routers.cadvisor.entrypoints=websecure
+      - traefik.http.routers.cadvisor.tls=true
+      - traefik.http.routers.cadvisor.tls.certresolver=le
+      - traefik.http.routers.cadvisor.tls.domains[0].main=el-programmer.click
+      - traefik.http.routers.cadvisor.priority=100
+      # No stripprefix: url_base_prefix already makes cAdvisor serve under /cadvisor.
+      - traefik.http.services.cadvisor.loadbalancer.server.port=8080
+      - traefik.docker.network=monitoring-network
+      # --- Subdomain route: cadvisor.el-programmer.click -> 301 to /cadvisor ---
+      - traefik.http.routers.cadvisor-sub.rule=Host(`cadvisor.el-programmer.click`)
+      - traefik.http.routers.cadvisor-sub.entrypoints=websecure
+      - traefik.http.routers.cadvisor-sub.tls=true
+      # Host rule -> ACME auto-issues the cert for this subdomain (no tls.domains needed).
+      - traefik.http.routers.cadvisor-sub.tls.certresolver=le
+      - traefik.http.routers.cadvisor-sub.service=cadvisor
+      - traefik.http.routers.cadvisor-sub.middlewares=cadvisor-sub-redirect
+      - traefik.http.middlewares.cadvisor-sub-redirect.redirectregex.regex=^https://cadvisor\.el-programmer\.click/?(.*)
+      - traefik.http.middlewares.cadvisor-sub-redirect.redirectregex.replacement=https://el-programmer.click/cadvisor/$${1}
+      - traefik.http.middlewares.cadvisor-sub-redirect.redirectregex.permanent=false
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/cadvisor/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -42,6 +70,18 @@ services:
     networks:
       - monitoring-network
 
+  # blackbox-exporter:
+  #   image: prom/blackbox-exporter:v0.26.0
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ../prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+  #   command:
+  #     - --config.file=/etc/blackbox_exporter/config.yml
+  #   mem_limit: 128M
+  #   cpus: '0.25'
+  #   networks:
+  #     - monitoring-network
+
   prometheus:
     image: prom/prometheus:v2.54.1
     restart: unless-stopped
@@ -56,16 +96,34 @@ services:
       - --storage.tsdb.path=/prometheus
       - --web.console.libraries=/usr/share/prometheus/console_libraries
       - --web.console.templates=/usr/share/prometheus/consoles
-      - --web.external-url=https://localhost/prometheus
+      # Public canonical URL (used to build absolute links / redirects).
+      - --web.external-url=https://el-programmer.click/prometheus
       - --web.route-prefix=/prometheus
     labels:
       - traefik.enable=true
       - traefik.http.routers.prometheus.tls=true
+      # certresolver was missing here -> Prometheus would have kept the
+      # self-signed cert. Add it + the domain so it shares the real LE cert.
+      - traefik.http.routers.prometheus.tls.certresolver=le
+      - traefik.http.routers.prometheus.tls.domains[0].main=el-programmer.click
       - traefik.http.routers.prometheus.rule=PathPrefix(`/prometheus`)
       - traefik.http.routers.prometheus.entrypoints=websecure
       - traefik.http.routers.prometheus.priority=100
       - traefik.http.services.prometheus.loadbalancer.server.port=9090
       - traefik.docker.network=monitoring-network
+      # --- Subdomain route: prometheus.el-programmer.click -> 301 to /prometheus ---
+      # Prometheus serves under /prometheus (route-prefix), so the subdomain can't
+      # serve it at root; instead we redirect it to the canonical path URL.
+      - traefik.http.routers.prometheus-sub.rule=Host(`prometheus.el-programmer.click`)
+      - traefik.http.routers.prometheus-sub.entrypoints=websecure
+      - traefik.http.routers.prometheus-sub.tls=true
+      # Host rule -> ACME auto-issues the cert for this subdomain.
+      - traefik.http.routers.prometheus-sub.tls.certresolver=le
+      - traefik.http.routers.prometheus-sub.service=prometheus
+      - traefik.http.routers.prometheus-sub.middlewares=prometheus-sub-redirect
+      - traefik.http.middlewares.prometheus-sub-redirect.redirectregex.regex=^https://prometheus\.el-programmer\.click/?(.*)
+      - traefik.http.middlewares.prometheus-sub-redirect.redirectregex.replacement=https://el-programmer.click/prometheus/$${1}
+      - traefik.http.middlewares.prometheus-sub-redirect.redirectregex.permanent=false
     mem_limit: 512M
     cpus: '0.5'
     healthcheck:
@@ -85,7 +143,7 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
-      GF_SERVER_ROOT_URL: https://localhost/grafana/
+      GF_SERVER_ROOT_URL: https://el-programmer.click/grafana/
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     secrets:
       - grafana_admin_password
@@ -94,9 +152,23 @@ services:
       - traefik.http.routers.grafana.rule=PathPrefix(`/grafana`)
       - traefik.http.routers.grafana.entrypoints=websecure
       - traefik.http.routers.grafana.tls=true
+      - traefik.http.routers.grafana.tls.certresolver=le
+      - traefik.http.routers.grafana.tls.domains[0].main=el-programmer.click
       - traefik.http.routers.grafana.priority=100
       - traefik.http.services.grafana.loadbalancer.server.port=3000
       - traefik.docker.network=monitoring-network
+      # --- Subdomain route: grafana.el-programmer.click -> 301 to /grafana ---
+      # Grafana serves from the /grafana sub-path (serve_from_sub_path), so the
+      # subdomain redirects to the canonical path URL.
+      - traefik.http.routers.grafana-sub.rule=Host(`grafana.el-programmer.click`)
+      - traefik.http.routers.grafana-sub.entrypoints=websecure
+      - traefik.http.routers.grafana-sub.tls=true
+      - traefik.http.routers.grafana-sub.tls.certresolver=le
+      - traefik.http.routers.grafana-sub.service=grafana
+      - traefik.http.routers.grafana-sub.middlewares=grafana-sub-redirect
+      - traefik.http.middlewares.grafana-sub-redirect.redirectregex.regex=^https://grafana\.el-programmer\.click/?(.*)
+      - traefik.http.middlewares.grafana-sub-redirect.redirectregex.replacement=https://el-programmer.click/grafana/$${1}
+      - traefik.http.middlewares.grafana-sub-redirect.redirectregex.permanent=false
     volumes:
       - grafana-data:/var/lib/grafana
       - ../grafana/provisioning:/etc/grafana/provisioning:ro
@@ -148,16 +220,28 @@ services:
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
-      - --web.external-url=https://localhost/alertmanager
+      - --web.external-url=https://el-programmer.click/alertmanager
       - --web.route-prefix=/alertmanager
     labels:
       - traefik.enable=true
       - traefik.http.routers.alertmanager.rule=PathPrefix(`/alertmanager`)
       - traefik.http.routers.alertmanager.entrypoints=websecure
       - traefik.http.routers.alertmanager.tls=true
+      - traefik.http.routers.alertmanager.tls.certresolver=le
+      - traefik.http.routers.alertmanager.tls.domains[0].main=el-programmer.click
       - traefik.http.routers.alertmanager.priority=100
       - traefik.http.services.alertmanager.loadbalancer.server.port=9093
       - traefik.docker.network=monitoring-network
+      # --- Subdomain route: alertmanager.el-programmer.click -> 301 to /alertmanager ---
+      - traefik.http.routers.alertmanager-sub.rule=Host(`alertmanager.el-programmer.click`)
+      - traefik.http.routers.alertmanager-sub.entrypoints=websecure
+      - traefik.http.routers.alertmanager-sub.tls=true
+      - traefik.http.routers.alertmanager-sub.tls.certresolver=le
+      - traefik.http.routers.alertmanager-sub.service=alertmanager
+      - traefik.http.routers.alertmanager-sub.middlewares=alertmanager-sub-redirect
+      - traefik.http.middlewares.alertmanager-sub-redirect.redirectregex.regex=^https://alertmanager\.el-programmer\.click/?(.*)
+      - traefik.http.middlewares.alertmanager-sub-redirect.redirectregex.replacement=https://el-programmer.click/alertmanager/$${1}
+      - traefik.http.middlewares.alertmanager-sub-redirect.redirectregex.permanent=false
     mem_limit: 128M
     cpus: '0.25'
     networks:

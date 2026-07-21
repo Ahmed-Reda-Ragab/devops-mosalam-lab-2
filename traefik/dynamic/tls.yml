@@ -1,0 +1,32 @@
+# ============================================================================
+#  TLS options (loaded by Traefik's file provider).
+#
+#  The "default" options block is special in Traefik: it is applied to EVERY
+#  router that does not explicitly set tls.options=<name>. So defining it here
+#  hardens TLS for the whole stack (frontend, backend, grafana, prometheus, …)
+#  without touching a single router label.
+# ============================================================================
+tls:
+  options:
+    default:
+      # Refuse anything older than TLS 1.2 (TLS 1.0/1.1 are broken/deprecated).
+      minVersion: VersionTLS12
+
+      # Explicit, modern cipher suites for the TLS 1.2 handshake. TLS 1.3 picks
+      # its own strong suites and ignores this list.
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+
+      # Prefer the modern elliptic curves for key exchange.
+      curvePreferences:
+        - CurveP256
+        - X25519
+
+      # sniStrict:false -> still serve the default certificate when a client
+      # connects without SNI (kept off so localhost / IP access keeps working).
+      sniStrict: false

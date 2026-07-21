@@ -1,0 +1,35 @@
+# ============================================================================
+#  Generic HTTP middlewares (loaded by Traefik's file provider).
+#  Referenced from the backend router in docker-compose-apps.yml as
+#  "<name>@file" (the @file suffix = "defined in the file provider").
+# ============================================================================
+http:
+
+  middlewares:
+
+    # Rate limiting: shields the API from bursts / brute-force / light DoS.
+    api-ratelimit:
+      rateLimit:
+        average: 10 #for example, 10 requests per second
+        burst: 20 #for example,max  20 requests at once
+
+    body-limit:
+      buffering:
+        maxRequestBodyBytes: 10485760 # max 10MB request body size
+        memRequestBodyBytes: 2097152  # max 2MB in memory ,  DoS Protection
+
+    compression:
+
+      compress: {}
+
+    cors:
+
+      headers:
+        # allowed request methods for CORS requests
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS

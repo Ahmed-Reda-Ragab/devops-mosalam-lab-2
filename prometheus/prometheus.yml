@@ -1,10 +1,13 @@
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 15s      # how often every target below is scraped
+  evaluation_interval: 15s  # how often the alerting rules are evaluated
 
+# Alert rules live in a separate file (mounted read-only into the container).
 rule_files:
   - /etc/prometheus/alerts.yml
 
+# Where firing alerts are shipped. Alertmanager runs behind a /alertmanager
+# route-prefix, so the path_prefix must match or the POSTs would 404.
 alerting:
   alertmanagers:
     - path_prefix: /alertmanager
@@ -12,6 +15,8 @@ alerting:
         - targets:
             - alertmanager:9093
 
+# All targets are reached by their Docker service name over the shared
+# "monitoring-network" (Prometheus is attached to it, so DNS resolves).
 scrape_configs:
   - job_name: prometheus
     metrics_path: /prometheus/metrics
@@ -20,6 +25,9 @@ scrape_configs:
           - localhost:9090
 
   - job_name: cadvisor
+    # cAdvisor runs with --url_base_prefix=/cadvisor, so its Prometheus endpoint
+    # moved from /metrics to /cadvisor/metrics (see docker-compose.monitoring.yml).
+    metrics_path: /cadvisor/metrics
     static_configs:
       - targets:
           - cadvisor:8080
@@ -55,3 +63,46 @@ scrape_configs:
     static_configs:
       - targets:
           - alertmanager:9093
+  # --- Traefik (reverse proxy) metrics ---------------------------------------
+  # Enabled in docker-compose-apps.yml via:
+  #   --metrics.prometheus=true
+  #   --metrics.prometheus.entrypoint=metrics   (dedicated entrypoint = :9100)
+  #   --entrypoints.metrics.address=:9100
+  # Traefik exposes the Prometheus endpoint at /metrics on port 9100. It is NOT
+  # published to the host (no ports: mapping) — Prometheus reaches it purely
+  # over monitoring-network, which both containers share. addrouterslabels /
+  # addserviceslabels / addentrypointslabels enrich these series with per-route
+  # labels so you can chart request rate / latency / status per router.
+  - job_name: traefik
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - traefik:9100
+
+  # --- Blackbox: external HTTPS + TLS-certificate probing --------------------
+  # Prometheus asks blackbox-exporter to probe each target URL; the exporter
+  # returns probe_success and probe_ssl_earliest_cert_expiry (used by the
+  # SSLCertificateExpiringSoon alert). The relabeling below is the standard
+  # blackbox pattern: move the target URL into ?target=, keep it as the
+  # "instance" label, then point the actual scrape at the exporter itself.
+  - job_name: blackbox
+    metrics_path: /probe
+    params:
+      module: [https_2xx]
+    static_configs:
+      - targets:
+          # Probe the real hostname. It resolves INSIDE monitoring-network to the
+          # Traefik container via the network alias we set in
+          # docker-compose-apps.yml (traefik -> alias el-programmer.click), so:
+          #   * the SNI matches -> Traefik serves the real Let's Encrypt cert,
+          #   * probe_ssl_earliest_cert_expiry reflects the REAL cert,
+          #   * no dependency on public DNS from inside the container or on NAT
+          #     hairpinning back to our own public IP.
+          - https://el-programmer.click
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target      # target URL -> ?target=<url>
+      - source_labels: [__param_target]
+        target_label: instance            # show the URL as the instance label
+      - target_label: __address__
+        replacement: blackbox-exporter:9115  # actually scrape the exporter

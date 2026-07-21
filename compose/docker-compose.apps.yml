@@ -26,12 +26,29 @@ services:
       - traefik.http.routers.backend.rule=PathPrefix(`/api`)
       - traefik.http.routers.backend.entrypoints=websecure
       - traefik.http.routers.backend.tls=true
-      # Self-signed: tls=true with no certresolver -> Traefik's built-in default cert.
+      - traefik.http.routers.backend.tls.certresolver=le
+      # The rule above is PathPrefix-only (no Host), so the route also answers on
+      # a raw IP. But ACME needs to know WHICH domain to request a cert for, so we
+      # declare it explicitly with tls.domains -> a real Let's Encrypt cert is
+      # issued for el-programmer.click; IP access keeps working on the default
+      # self-signed cert.
+      - traefik.http.routers.backend.tls.domains[0].main=el-programmer.click
       - traefik.http.routers.backend.priority=100
       # No stripprefix: FastAPI's router already mounts under /api, so the
       # backend expects to receive the full /api/... path (as nginx passed it).
       - traefik.http.services.backend.loadbalancer.server.port=8000
       # backend sits on 3 networks; pin the one Traefik shares with it.
+      - traefik.docker.network=private-network
+      # add  middlewares from traefik/dynamic/middlewares.yml and traefik/dynamic/security.yml
+      - traefik.http.routers.backend.middlewares=api-ratelimit@file,cors@file,body-limit@file,compression@file,security-headers@file
+      # run api services on /pro-api path prefix , without middlewares
+      - traefik.http.routers.proBackend.rule=PathPrefix(`/pro-api`)
+      - traefik.http.routers.proBackend.entrypoints=websecure
+      - traefik.http.routers.proBackend.tls=true
+      - traefik.http.routers.proBackend.tls.certresolver=le
+      - traefik.http.routers.proBackend.tls.domains[0].main=el-programmer.click
+      - traefik.http.routers.proBackend.priority=100
+      - traefik.http.services.proBackend.loadbalancer.server.port=8000
       - traefik.docker.network=private-network
     restart: unless-stopped
     mem_limit: 512M
@@ -64,6 +81,8 @@ services:
       - traefik.http.routers.frontend.rule=PathPrefix(`/`)
       - traefik.http.routers.frontend.entrypoints=websecure
       - traefik.http.routers.frontend.tls=true
+      - traefik.http.routers.frontend.tls.certresolver=le
+      - traefik.http.routers.frontend.tls.domains[0].main=el-programmer.click
       - traefik.http.routers.frontend.priority=1
       - traefik.http.services.frontend.loadbalancer.server.port=80
       - traefik.docker.network=private-network
@@ -93,6 +112,8 @@ services:
     command:
       - --api.dashboard=true
       - --providers.docker=true
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
       # Only route containers that opt in with traefik.enable=true.
       - --providers.docker.exposedbydefault=false
       - --entrypoints.web.address=:80
@@ -100,19 +121,41 @@ services:
       # Dedicated entrypoint for the dashboard so it never collides with the
       # backend's /api routes on the web entrypoint.
       - --entrypoints.dashboard.address=:8080
+      - --entrypoints.metrics.address=:9100
       - --entrypoints.web.http.redirections.entrypoint.to=websecure
       - --entrypoints.web.http.redirections.entrypoint.scheme=https
-        # Let's Encrypt
+        # Let's Encrypt (ACME) resolver "le" — HTTP-01 challenge on the web
+        # entrypoint (:80). The routers keep PathPrefix-only rules (so they also
+        # answer on the raw IP) and declare the domain via tls.domains, which is
+        # what lets ACME request a REAL cert for el-programmer.click.
+        # PREREQUISITES for issuance to succeed:
+        #   1) DNS: an A record  el-programmer.click -> this host's public IP.
+        #   2) Port 80 reachable from the internet (needed for the HTTP-01 check).
+        # The web->websecure redirect does NOT block the challenge: Traefik
+        # serves /.well-known/acme-challenge/ on :80 before applying the redirect.
       - --certificatesresolvers.le.acme.email=info@el-programmer.click
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.le.acme.httpchallenge=true
       - --certificatesresolvers.le.acme.httpchallenge.entrypoint=web
+
+      - --accesslog=true
+      - --accesslog.format=json
+
+      - --log.level=INFO
+      - --log.format=json
+
+      - --metrics.prometheus=true
+      - --metrics.prometheus.entrypoint=metrics
+      - --metrics.prometheus.addrouterslabels=true
+      - --metrics.prometheus.addserviceslabels=true
+      - --metrics.prometheus.addentrypointslabels=true
     ports:
       - "80:80"
       - "443:443"
       - "8081:8080" # Traefik dashboard (basic auth)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ../traefik/dynamic:/etc/traefik/dynamic:ro
       - traefik-letsencrypt:/letsencrypt
     secrets:
       - traefik_dashboard_users
@@ -121,7 +164,7 @@ services:
       - traefik.http.routers.dashboard.rule=PathPrefix(`/`)
       - traefik.http.routers.dashboard.entrypoints=dashboard
       - traefik.http.routers.dashboard.service=api@internal
-      - traefik.http.routers.dashboard.middlewares=dashboard-auth@docker
+      - traefik.http.routers.dashboard.middlewares=dashboard-auth@docker,ip-whitelist@file
       - traefik.http.middlewares.dashboard-auth.basicauth.usersfile=/run/secrets/traefik_dashboard_users
       - traefik.docker.network=public-network
     mem_limit: 128M
@@ -129,9 +172,16 @@ services:
     logging:
       driver: "local"
     networks:
-      - public-network
-      - private-network
-      - monitoring-network
+      public-network:
+      private-network:
+      # Long-form so we can add a network alias: inside monitoring-network the
+      # name "el-programmer.click" resolves to this Traefik container. That lets
+      # the blackbox exporter probe https://el-programmer.click internally and
+      # be served the real Let's Encrypt cert (SNI match) — no public DNS round
+      # trip and no NAT-hairpin problems.
+      monitoring-network:
+        aliases:
+          - el-programmer.click
 
 volumes:
   traefik-letsencrypt:
