@@ -42,6 +42,11 @@ services:
       - traefik.http.routers.proBackend.tls.domains[0].main=el-programmer.click
       - traefik.http.routers.proBackend.priority=100
       - traefik.http.routers.proBackend.service=backend
+      # Rewrite: /pro-api/* -> /api/*
+      - traefik.http.middlewares.pro-api-rewrite.replacepathregex.regex=^/pro-api/(.*)
+      - traefik.http.middlewares.pro-api-rewrite.replacepathregex.replacement=/api/$$1
+      # Attach the rewrite middleware
+      - traefik.http.routers.proBackend.middlewares=pro-api-rewrite
       # Shared Service
       - traefik.http.services.backend.loadbalancer.server.port=8000
       # Docker Network
