@@ -40,7 +40,10 @@ services:
       # backend sits on 3 networks; pin the one Traefik shares with it.
       - traefik.docker.network=private-network
       # add  middlewares from traefik/dynamic/middlewares.yml and traefik/dynamic/security.yml
-      - traefik.http.routers.backend.middlewares=api-ratelimit@file,cors@file,body-limit@file,compression@file,security-headers@file
+      # Order = request pass-through order. api-ratelimit stays first so it still
+      # shields the auth check from brute force; api-key rejects unauthenticated
+      # requests (403) before the heavier body buffering/compression run.
+      - traefik.http.routers.backend.middlewares=api-ratelimit@file,api-key@file,cors@file,body-limit@file,compression@file,security-headers@file
       # run api services on /pro-api path prefix , without middlewares
       - traefik.http.routers.proBackend.rule=PathPrefix(`/pro-api`)
       - traefik.http.routers.proBackend.entrypoints=websecure
@@ -114,6 +117,14 @@ services:
       - --providers.docker=true
       - --providers.file.directory=/etc/traefik/dynamic
       - --providers.file.watch=true
+      # API-key auth plugin (Yaegi). Registered here in STATIC config; Traefik
+      # fetches + compiles it from GitHub at startup (needs outbound internet on
+      # first boot). The middleware instance is defined in
+      # traefik/dynamic/api-key.yml and attached to the backend router as
+      # api-key@file. The name "api-key-middleware" below MUST match the key used
+      # under `plugin:` in that dynamic file.
+      - --experimental.plugins.api-key-middleware.moduleName=github.com/dtomlinson91/traefik-api-key-middleware
+      - --experimental.plugins.api-key-middleware.version=v0.1.2
       # Only route containers that opt in with traefik.enable=true.
       - --providers.docker.exposedbydefault=false
       - --entrypoints.web.address=:80

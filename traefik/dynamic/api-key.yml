@@ -1,0 +1,35 @@
+# ============================================================================
+#  API-key authentication (Traefik plugin: dtomlinson91/traefik-api-key-middleware).
+#  The plugin is REGISTERED in the static config (traefik `command:` in
+#  compose/docker-compose.apps.yml). This file only configures a middleware
+#  INSTANCE of it, attached to the backend router as "api-key@file".
+#
+#  Behaviour: requests to /api must send  `X-API-KEY: <key>`. A missing or
+#  unknown key is rejected with HTTP 403. On success the header is stripped
+#  before the request reaches the backend (removeHeadersOnSuccess).
+#
+#  ⚠️  SECRET HANDLING: this plugin (v0.1.2) has NO Docker-secret / file / env
+#  support — keys live in plaintext in this file. Do NOT commit a real key.
+#  Generate a strong key and keep it out of git, e.g.:
+#      openssl rand -hex 32          # or:  python -c "import secrets;print(secrets.token_hex(32))"
+#  Rotate by editing `keys` below; the file provider hot-reloads (watch=true),
+#  no Traefik restart needed. `keys` is a list, so several keys can be valid at
+#  once (handy for rotation / per-client keys).
+# ============================================================================
+http:
+
+  middlewares:
+
+    api-key:
+      plugin:
+        # Must match --experimental.plugins.<NAME> in the static config.
+        api-key-middleware:
+          # Accept the key from the X-API-KEY request header.
+          authenticationHeader: true
+          authenticationheaderName: X-API-KEY   # NOTE: lowercase "h" — the plugin's field name.
+          # Not using the `Authorization: Bearer <key>` style.
+          bearerHeader: false
+          # Strip the credential header once validated so it never reaches the app.
+          removeHeadersOnSuccess: true
+          keys:
+            - asxijomckasmksmlcmslcwefpwokww3309kml

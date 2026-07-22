@@ -2,6 +2,31 @@
 // Optional ?backend=<baseUrl> overrides it for testing against a direct backend.
 const apiBase = new URLSearchParams(window.location.search).get('backend') || '';
 const apiUrl = `${apiBase}/api/tasks`;
+
+// API key sent as X-API-KEY on every /api call. It's editable in the UI
+// (#api-key input, pre-filled with a default) so you can change it while
+// testing; the last value is remembered in localStorage across reloads.
+// NOTE: this value ships to the browser, so it is visible to anyone using the app.
+const apiKeyInput = document.getElementById('api-key');
+
+// A previously-saved key (from testing) overrides the default in the HTML.
+const savedApiKey = localStorage.getItem('apiKey');
+if (savedApiKey !== null) {
+  apiKeyInput.value = savedApiKey;
+}
+apiKeyInput.addEventListener('change', () => {
+  localStorage.setItem('apiKey', apiKeyInput.value.trim());
+});
+
+// Merge the current API-key header with any per-request headers (e.g. Content-Type).
+function authHeaders(extra) {
+  const headers = extra ? { ...extra } : {};
+  const key = apiKeyInput.value.trim();
+  if (key) {
+    headers['X-API-KEY'] = key;
+  }
+  return headers;
+}
 const backendUrlLabel = document.getElementById('backend-url');
 const taskForm = document.getElementById('task-form');
 const taskList = document.getElementById('task-list');
@@ -51,7 +76,7 @@ function resetForm() {
 async function fetchTasks() {
   try {
     clearError();
-    const response = await fetch(apiUrl);
+    const response = await fetch(apiUrl, { headers: authHeaders() });
     if (!response.ok) {
       throw new Error('Unable to load tasks');
     }
@@ -118,7 +143,7 @@ async function deleteTask(taskId) {
 
   try {
     clearError();
-    const response = await fetch(`${apiUrl}/${taskId}`, { method: 'DELETE' });
+    const response = await fetch(`${apiUrl}/${taskId}`, { method: 'DELETE', headers: authHeaders() });
     if (!response.ok) {
       throw new Error('Unable to delete task');
     }
@@ -143,7 +168,7 @@ async function submitTask(event) {
     clearError();
     const response = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
     });
 
