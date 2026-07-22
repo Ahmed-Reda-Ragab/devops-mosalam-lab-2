@@ -23,35 +23,28 @@ services:
       - '8000'
     labels:
       - traefik.enable=true
+        # Backend API (/api) - With Security Middlewares
       - traefik.http.routers.backend.rule=PathPrefix(`/api`)
       - traefik.http.routers.backend.entrypoints=websecure
       - traefik.http.routers.backend.tls=true
       - traefik.http.routers.backend.tls.certresolver=le
-      # The rule above is PathPrefix-only (no Host), so the route also answers on
-      # a raw IP. But ACME needs to know WHICH domain to request a cert for, so we
-      # declare it explicitly with tls.domains -> a real Let's Encrypt cert is
       # issued for el-programmer.click; IP access keeps working on the default
       # self-signed cert.
       - traefik.http.routers.backend.tls.domains[0].main=el-programmer.click
       - traefik.http.routers.backend.priority=100
-      # No stripprefix: FastAPI's router already mounts under /api, so the
-      # backend expects to receive the full /api/... path (as nginx passed it).
-      - traefik.http.services.backend.loadbalancer.server.port=8000
-      # backend sits on 3 networks; pin the one Traefik shares with it.
-      - traefik.docker.network=private-network
-      # add  middlewares from traefik/dynamic/middlewares.yml and traefik/dynamic/security.yml
-      # Order = request pass-through order. api-ratelimit stays first so it still
-      # shields the auth check from brute force; api-key rejects unauthenticated
-      # requests (403) before the heavier body buffering/compression run.
+      - traefik.http.routers.backend.service=backend
       - traefik.http.routers.backend.middlewares=api-ratelimit@file,api-key@file,cors@file,body-limit@file,compression@file,security-headers@file
-      # run api services on /pro-api path prefix , without middlewares
+        # Pro API (/pro-api) - Without Middlewares
       - traefik.http.routers.proBackend.rule=PathPrefix(`/pro-api`)
       - traefik.http.routers.proBackend.entrypoints=websecure
       - traefik.http.routers.proBackend.tls=true
       - traefik.http.routers.proBackend.tls.certresolver=le
       - traefik.http.routers.proBackend.tls.domains[0].main=el-programmer.click
       - traefik.http.routers.proBackend.priority=100
-      - traefik.http.services.proBackend.loadbalancer.server.port=8000
+      - traefik.http.routers.proBackend.service=backend
+      # Shared Service
+      - traefik.http.services.backend.loadbalancer.server.port=8000
+      # Docker Network
       - traefik.docker.network=private-network
     restart: unless-stopped
     mem_limit: 512M
