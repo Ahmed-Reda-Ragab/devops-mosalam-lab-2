@@ -20,10 +20,10 @@ def create_task(db: Session, task: schemas.TaskCreate) -> models.Task:
     db.add(db_task)
     # Flush to send the INSERT and populate the primary key
     db.flush()
-    # Refresh to load any server-side defaults (timestamps, enums)
-    db.refresh(db_task)
     # Commit the transaction
     db.commit()
+    # Refresh to load any server-side defaults (timestamps, enums) after commit
+    db.refresh(db_task)
     return db_task
 
 
@@ -42,3 +42,5 @@ def update_task(db: Session, db_task: models.Task, task_update: schemas.TaskUpda
 def delete_task(db: Session, db_task: models.Task) -> None:
     db.delete(db_task)
     db.commit()
+    db.refresh(db_task)
+
