@@ -15,3 +15,5 @@ __pycache__/
 
 traefik/acme.json
 traefik/traefik.yml
+.ruff_cache
+.pytest_cache
