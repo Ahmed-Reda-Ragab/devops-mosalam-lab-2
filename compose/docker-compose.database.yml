@@ -169,9 +169,20 @@ services:
       - "8083:8080"
     mem_limit: 128m
     cpus: 0.25
+    labels:
+      - traefik.enable=true
+      # Router
+      - traefik.http.routers.adminer.rule=Host(`adminer.el-programmer.click`)
+      - traefik.http.routers.adminer.entrypoints=websecure
+      - traefik.http.routers.adminer.tls=true
+      - traefik.http.routers.adminer.tls.certresolver=le
+      # Service
+      - traefik.http.services.adminer.loadbalancer.server.port=8080
+      # Network
+      - traefik.docker.network=private-network
     networks:
       - db-network
-      - public-network
+      - private-network
 
   ####################################################
   #  Memcached  (application cache)
