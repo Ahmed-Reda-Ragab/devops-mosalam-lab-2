@@ -24,8 +24,8 @@ async def log_requests(request: Request, call_next):
     logger.info("request=%s method=%s path=%s", request.client.host if request.client else None, request.method, request.url.path)
     try:
         response = await call_next(request)
-    except Exception:
+    except Exception as e:
         logger.exception("request failed")
-        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+        raise
     logger.info("response=%s status_code=%s path=%s", response.status_code, request.method, request.url.path)
     return response
