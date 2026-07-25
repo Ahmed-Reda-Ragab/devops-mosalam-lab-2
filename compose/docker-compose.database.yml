@@ -229,6 +229,9 @@ networks:
   # Shared with the main stack (Traefik / nginx). Create it once with:
   #   docker network create public-network
   public-network:
+  private-network:
+    external: true
+    name: private-network
   
 secrets:
   mysql_root_password:
