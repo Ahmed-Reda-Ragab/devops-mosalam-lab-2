@@ -34,8 +34,16 @@ class TaskRead(TaskBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PaginationMeta(BaseModel):
+    page: int
+    limit: int
+    total: int
+    pages: int
+
+
 class TaskListResponse(BaseModel):
     tasks: list[TaskRead]
+    pagination: PaginationMeta
     source: str
     message: str
     container: str

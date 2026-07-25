@@ -7,6 +7,31 @@ def get_tasks(db: Session) -> list[models.Task]:
     return db.query(models.Task).order_by(models.Task.id).all()
 
 
+def get_tasks_paginated(db: Session, page: int = 1, limit: int = 10) -> tuple[list[models.Task], int]:
+    """Get paginated tasks with total count.
+    
+    Args:
+        db: Database session
+        page: Page number (1-indexed)
+        limit: Items per page
+    
+    Returns:
+        Tuple of (tasks list, total count)
+    """
+    # Ensure valid page and limit
+    page = max(1, page)
+    limit = max(1, min(limit, 100))  # Cap at 100 items per page
+    
+    query = db.query(models.Task).order_by(models.Task.id)
+    total = query.count()
+    
+    # Calculate offset and fetch
+    offset = (page - 1) * limit
+    tasks = query.offset(offset).limit(limit).all()
+    
+    return tasks, total
+
+
 def get_task(db: Session, task_id: int) -> models.Task | None:
     return db.query(models.Task).filter(models.Task.id == task_id).first()
 
