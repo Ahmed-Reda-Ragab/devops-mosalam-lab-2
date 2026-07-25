@@ -1,0 +1,20 @@
+# Blackbox exporter probe modules. Prometheus (job "blackbox") calls this
+# module against the target URL and gets back probe_success + the TLS metric
+# probe_ssl_earliest_cert_expiry (used by the SSLCertificateExpiringSoon alert).
+modules:
+  https_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      preferred_ip_protocol: ip4
+      # These are all treated as "site is up" (auth-protected pages return 401/403).
+      valid_status_codes: [200, 301, 302, 401, 403]
+      method: GET
+      tls_config:
+        # false = verify the certificate chain. We probe el-programmer.click,
+        # which is served a real Let's Encrypt cert, so verification passes and
+        # a broken/expired/misconfigured chain would (correctly) fail the probe.
+        # NOTE: during the very first minutes after startup — before ACME has
+        # finished issuing — Traefik still serves its self-signed default cert,
+        # so HTTPSProbeFailed may fire briefly until the real cert is in place.
+        insecure_skip_verify: false

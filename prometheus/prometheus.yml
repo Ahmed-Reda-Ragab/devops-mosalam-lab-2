@@ -25,9 +25,7 @@ scrape_configs:
           - localhost:9090
 
   - job_name: cadvisor
-    # cAdvisor runs with --url_base_prefix=/cadvisor, so its Prometheus endpoint
-    # moved from /metrics to /cadvisor/metrics (see docker-compose.monitoring.yml).
-    metrics_path: /cadvisor/metrics
+    metrics_path: /metrics
     static_configs:
       - targets:
           - cadvisor:8080

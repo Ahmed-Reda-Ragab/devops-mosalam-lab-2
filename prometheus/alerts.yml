@@ -205,7 +205,30 @@ groups:
           severity: warning
         annotations:
           summary: 'TLS certificate expires soon for {{ $labels.instance }}'
-          description: 'The TLS certificate for {{ $labels.instance }} expires in less than 7 days.'
+          description: 'The TLS certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }} (approximately {{ (($value / 86400) | printf "%.1f") }} days).'
+          value: '{{ (probe_ssl_earliest_cert_expiry - time()) }}'
+
+      # Additional alert for when certificate is expiring very soon (within 2 days)
+      - alert: SSLCertificateExpiringSoonCritical
+        expr: probe_ssl_earliest_cert_expiry - time() < 2 * 24 * 3600
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: '🚨 TLS certificate expires VERY SOON for {{ $labels.instance }}'
+          description: 'URGENT: The TLS certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }} (approximately {{ (($value / 86400) | printf "%.1f") }} days). Action required!'
+          value: '{{ (probe_ssl_earliest_cert_expiry - time()) }}'
+
+      # Informational alert showing current days remaining (always active for monitoring)
+      - alert: SSLCertificateExpiryInfo
+        expr: probe_ssl_earliest_cert_expiry > 0
+        for: 1m
+        labels:
+          severity: info
+        annotations:
+          summary: 'SSL Certificate Status: {{ $labels.instance }}'
+          description: 'Certificate for {{ $labels.instance }} is valid. Days remaining: {{ (($value - time()) / 86400) | printf "%.0f" }} days. Expires on {{ $value | humanizeTimestamp }}.'
+          value: '{{ (probe_ssl_earliest_cert_expiry - time()) }}'
 
   # --- Monitoring self-health ---
   # These make sure the alerting pipeline itself is healthy. If Prometheus can't

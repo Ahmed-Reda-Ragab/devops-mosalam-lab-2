@@ -192,6 +192,35 @@ services:
         aliases:
           - el-programmer.click
 
+  locust:
+    image: locustio/locust:2.31.1
+    restart: unless-stopped
+    command:
+      - -f
+      - /mnt/locust/locustfile.py
+      - --host=http://backend:8000
+    volumes:
+      - ../locust:/mnt/locust:ro
+    ports:
+      - "8089:8089"
+    depends_on:
+      - backend
+    mem_limit: 256M
+    cpus: '0.5'
+    labels:
+      - traefik.enable=true
+      # Router
+      - traefik.http.routers.cadvisor.rule=Host(`load.el-programmer.click`)
+      - traefik.http.routers.cadvisor.entrypoints=websecure
+      - traefik.http.routers.cadvisor.tls=true
+      - traefik.http.routers.cadvisor.tls.certresolver=le
+      # Service
+      - traefik.http.services.cadvisor.loadbalancer.server.port=8089
+      # Network
+      - traefik.docker.network=private-network
+    networks:
+      - private-network
+
 volumes:
   traefik-letsencrypt:
 

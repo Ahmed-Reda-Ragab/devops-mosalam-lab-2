@@ -2,8 +2,6 @@ services:
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     restart: unless-stopped
-    ports:
-      - "8082:8080"
     volumes:
       - /:/rootfs:ro
       - /var/run:/var/run:ro
@@ -11,46 +9,32 @@ services:
       - /var/lib/docker:/var/lib/docker:ro
     command:
       - --docker_only=true
-      # Serve EVERYTHING (UI, /metrics, /healthz) under /cadvisor so the app is
-      # reachable cleanly behind Traefik on the /cadvisor path prefix. NOTE: this
-      # moves the Prometheus endpoint to /cadvisor/metrics and health to
-      # /cadvisor/healthz (both updated below and in prometheus.yml).
-      - --url_base_prefix=/cadvisor
+
     mem_limit: 256M
-    cpus: '0.5'
+    cpus: "0.5"
     labels:
       - traefik.enable=true
-      # --- Path route (works on the domain AND the raw IP): /cadvisor ---
-      - traefik.http.routers.cadvisor.rule=PathPrefix(`/cadvisor`)
+      # Router
+      - traefik.http.routers.cadvisor.rule=Host(`cadvisor.el-programmer.click`)
       - traefik.http.routers.cadvisor.entrypoints=websecure
       - traefik.http.routers.cadvisor.tls=true
       - traefik.http.routers.cadvisor.tls.certresolver=le
-      - traefik.http.routers.cadvisor.tls.domains[0].main=el-programmer.click
-      - traefik.http.routers.cadvisor.priority=100
-      # No stripprefix: url_base_prefix already makes cAdvisor serve under /cadvisor.
+      # Service
       - traefik.http.services.cadvisor.loadbalancer.server.port=8080
+      # Network
       - traefik.docker.network=monitoring-network
-      # --- Subdomain route: cadvisor.el-programmer.click -> 301 to /cadvisor ---
-      - traefik.http.routers.cadvisor-sub.rule=Host(`cadvisor.el-programmer.click`)
-      - traefik.http.routers.cadvisor-sub.entrypoints=websecure
-      - traefik.http.routers.cadvisor-sub.tls=true
-      # Host rule -> ACME auto-issues the cert for this subdomain (no tls.domains needed).
-      - traefik.http.routers.cadvisor-sub.tls.certresolver=le
-      - traefik.http.routers.cadvisor-sub.service=cadvisor
-      - traefik.http.routers.cadvisor-sub.middlewares=cadvisor-sub-redirect
-      - traefik.http.middlewares.cadvisor-sub-redirect.redirectregex.regex=^https://cadvisor\.el-programmer\.click/?(.*)
-      - traefik.http.middlewares.cadvisor-sub-redirect.redirectregex.replacement=https://el-programmer.click/cadvisor/$${1}
-      - traefik.http.middlewares.cadvisor-sub-redirect.redirectregex.permanent=false
+
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/cadvisor/healthz"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+
     networks:
       - public-network
       - monitoring-network
-
+      
   node-exporter:
     image: prom/node-exporter:v1.8.2
     restart: unless-stopped
@@ -70,17 +54,17 @@ services:
     networks:
       - monitoring-network
 
-  # blackbox-exporter:
-  #   image: prom/blackbox-exporter:v0.26.0
-  #   restart: unless-stopped
-  #   volumes:
-  #     - ../prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
-  #   command:
-  #     - --config.file=/etc/blackbox_exporter/config.yml
-  #   mem_limit: 128M
-  #   cpus: '0.25'
-  #   networks:
-  #     - monitoring-network
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.26.0
+    restart: unless-stopped
+    volumes:
+      - ../prometheus/blackbox.yml:/etc/blackbox_exporter/config.yml:ro
+    command:
+      - --config.file=/etc/blackbox_exporter/config.yml
+    mem_limit: 128M
+    cpus: '0.25'
+    networks:
+      - monitoring-network
 
   prometheus:
     image: prom/prometheus:v2.54.1
