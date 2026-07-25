@@ -210,12 +210,12 @@ services:
     labels:
       - traefik.enable=true
       # Router
-      - traefik.http.routers.cadvisor.rule=Host(`load.el-programmer.click`)
-      - traefik.http.routers.cadvisor.entrypoints=websecure
-      - traefik.http.routers.cadvisor.tls=true
-      - traefik.http.routers.cadvisor.tls.certresolver=le
+      - traefik.http.routers.locust.rule=Host(`load.el-programmer.click`)
+      - traefik.http.routers.locust.entrypoints=websecure
+      - traefik.http.routers.locust.tls=true
+      - traefik.http.routers.locust.tls.certresolver=le
       # Service
-      - traefik.http.services.cadvisor.loadbalancer.server.port=8089
+      - traefik.http.services.locust.loadbalancer.server.port=8089
       # Network
       - traefik.docker.network=private-network
     networks:
