@@ -2,6 +2,14 @@ global:
   scrape_interval: 15s      # how often every target below is scraped
   evaluation_interval: 15s  # how often the alerting rules are evaluated
 
+# Tempo's metrics_generator remote-writes span metrics derived from traces that
+# may arrive slightly late (a span is only counted once its trace is ingested).
+# Without an out-of-order window Prometheus rejects those samples outright and
+# the span-metrics/service-graph panels come out full of holes.
+storage:
+  tsdb:
+    out_of_order_time_window: 30m
+
 # Alert rules live in a separate file (mounted read-only into the container).
 rule_files:
   - /etc/prometheus/alerts.yml
@@ -61,6 +69,28 @@ scrape_configs:
     static_configs:
       - targets:
           - alertmanager:9093
+
+  # --- Tracing pipeline health ----------------------------------------------
+  # Tempo's own metrics: ingest rate, block flushes, and — most useful —
+  # tempo_discarded_spans_total, which is how you spot dropped traces.
+  - job_name: tempo
+    static_configs:
+      - targets:
+          - tempo:3200
+
+  # The collector exposes two different things on two ports:
+  #   :8888 -> its OWN health (otelcol_receiver_accepted_spans,
+  #            otelcol_exporter_send_failed_spans, queue size, ...)
+  #   :8889 -> OTLP metrics forwarded by apps, re-serialised as Prometheus.
+  - job_name: otel-collector
+    static_configs:
+      - targets:
+          - otel-collector:8888
+
+  - job_name: otel-collector-apps
+    static_configs:
+      - targets:
+          - otel-collector:8889
   # --- Traefik (reverse proxy) metrics ---------------------------------------
   # Enabled in docker-compose-apps.yml via:
   #   --metrics.prometheus=true

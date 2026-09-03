@@ -140,9 +140,49 @@ See [compose/README.md](compose/README.md) for the database stack details
 | `cadvisor`          | `cadvisor:v0.49.1`             | Per-container resource metrics            |
 | `node-exporter`     | `prom/node-exporter:v1.8.2`    | Host-level metrics (CPU/mem/disk)         |
 | `blackbox-exporter` | `prom/blackbox-exporter:v0.26.0` | External probing + **SSL cert expiry** metric |
+| `otel-collector`    | `otel/opentelemetry-collector-contrib:0.109.0` | Single OTLP ingest point for traces |
+| `tempo`             | `grafana/tempo:2.6.1`          | Trace store + span→metrics generator      |
 
 **Operational conventions** on every service: `restart: unless-stopped`,
 `mem_limit`/`cpus` caps, `healthcheck` probes, and size-based log rotation.
+
+#### The third signal: distributed tracing
+
+Metrics say *something is slow*; logs say *what one container printed*. Traces
+say **where the time went inside a single request**, across process boundaries:
+
+```
+browser → Traefik ──(W3C traceparent header)──> backend → SQL / memcached
+             │                                     │
+             └──────── OTLP gRPC :4317 ────────────┘
+                              ↓
+                       otel-collector  (batch, memory-limit, fan-out)
+                              ↓ OTLP
+                            Tempo  ──(remote_write span metrics)──> Prometheus
+                              ↓
+                           Grafana
+```
+
+- **Traefik opens the root span** and injects `traceparent` into the proxied
+  request; the backend's OTel SDK adopts it as its parent. That is what makes
+  one trace cover TLS termination, middlewares, the FastAPI handler and every
+  SQL statement — instead of two disconnected halves.
+- **The collector is the only endpoint the app knows** (`otel-collector:4317`).
+  Replacing Tempo with another backend is a config change there, not a rebuild
+  of every service.
+- **Tempo's metrics-generator** turns spans into `traces_spanmetrics_*` (RED per
+  route) and `traces_service_graph_*` (the Service Map) and remote-writes them
+  into Prometheus — which is why Prometheus runs with
+  `--web.enable-remote-write-receiver` and `--enable-feature=exemplar-storage`.
+
+All three signals cross-link in Grafana: a log line carries `trace_id=…` and
+links to its trace; a span links back to that container's logs and to the RED
+metrics for the same route; a latency spike links to a real trace via exemplars.
+
+Sampling is 100% (`OTEL_TRACES_SAMPLER_ARG` on the backend and
+`--tracing.sampleRate` on Traefik). Lower **both together** when trace volume
+starts costing more than it tells you — the backend uses a `ParentBased` sampler
+and honours Traefik's decision, so a mismatch would produce partial traces.
 
 ## Security
 
@@ -184,6 +224,8 @@ See [compose/README.md](compose/README.md) for the database stack details
 │
 ├── prometheus/                 # prometheus.yml · alerts.yml · blackbox.yml
 ├── alertmanager/ · promtail/ · grafana/     # observability configs + dashboards
+├── otel/                       # otel-collector-config.yml (OTLP receivers → Tempo)
+├── tempo/                      # tempo.yml (trace storage + metrics-generator)
 │
 ├── locust/                     # locustfile.py · locustfile_web.py · run_locust.ps1
 ├── scripts/                    # backup.sh · restore.sh · verify-restore.sh (host-side)

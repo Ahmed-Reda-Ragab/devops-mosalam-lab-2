@@ -83,6 +83,13 @@ services:
       # Public canonical URL (used to build absolute links / redirects).
       - --web.external-url=https://el-programmer.click/prometheus
       - --web.route-prefix=/prometheus
+      # Tempo's metrics_generator remote-writes span metrics + service-graph
+      # series here, so the write endpoint must be enabled (it is off by
+      # default). Without it Tempo logs 404s and the Service Map stays empty.
+      - --web.enable-remote-write-receiver
+      # Store exemplars: the trace IDs Tempo attaches to those series are what
+      # makes the "metric spike -> jump to the exact trace" link work.
+      - --enable-feature=exemplar-storage
     labels:
       - traefik.enable=true
       - traefik.http.routers.prometheus.tls=true
@@ -193,6 +200,81 @@ services:
     networks:
       - monitoring-network
 
+  # --- Tracing: OpenTelemetry Collector -> Tempo -----------------------------
+  # otel-collector is the only endpoint the apps know about. It receives OTLP,
+  # batches it, and forwards to Tempo. Nothing here is published to the host or
+  # to Traefik: traces are read through Grafana, which is already authenticated.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.109.0
+    restart: unless-stopped
+    command:
+      - --config=/etc/otelcol-contrib/config.yml
+    volumes:
+      - ../otel/otel-collector-config.yml:/etc/otelcol-contrib/config.yml:ro
+    depends_on:
+      - tempo
+    expose:
+      - '4317'   # OTLP gRPC  (backend + traefik push here)
+      - '4318'   # OTLP HTTP
+      - '8888'   # collector self-metrics  -> scraped by Prometheus
+      - '8889'   # app metrics re-exported in Prometheus format
+    mem_limit: 256M
+    cpus: '0.5'
+    logging:
+      driver: "local"
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - monitoring-network
+
+  # One-shot init: the tempo image runs as uid 10001, but a freshly created
+  # named volume is owned by root — Tempo would crash-loop on "permission
+  # denied" writing its WAL. This chowns it once and exits (upstream's own
+  # compose examples do the same).
+  tempo-init:
+    image: grafana/tempo:2.6.1
+    user: root
+    restart: "no"
+    entrypoint: ["chown", "-R", "10001:10001", "/var/tempo"]
+    volumes:
+      - tempo-data:/var/tempo
+    networks:
+      - monitoring-network
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    restart: unless-stopped
+    depends_on:
+      tempo-init:
+        condition: service_completed_successfully
+    command:
+      - -config.file=/etc/tempo/tempo.yml
+    volumes:
+      - ../tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - tempo-data:/var/tempo
+    expose:
+      - '3200'   # HTTP API — Grafana's Tempo datasource points here
+      - '4317'   # OTLP gRPC — direct push, bypassing the collector
+      - '4318'   # OTLP HTTP
+    # Traces are the heaviest signal in the stack; give it more headroom than
+    # Loki. Drop block_retention in tempo/tempo.yml if memory gets tight.
+    mem_limit: 512M
+    cpus: '0.5'
+    logging:
+      driver: "local"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3200/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - monitoring-network
+
   alertmanager:
     image: prom/alertmanager:v0.27.0
     restart: unless-stopped
@@ -237,6 +319,7 @@ volumes:
   grafana-data:
   loki-data:
   alertmanager-data:
+  tempo-data:
 
 secrets:
   grafana_admin_password:

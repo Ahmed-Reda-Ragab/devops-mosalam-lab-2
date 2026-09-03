@@ -11,6 +11,11 @@ datasources:
 
     jsonData:
       httpMethod: POST
+      # Metrics -> traces. Tempo's span metrics carry exemplars (a trace ID
+      # sampled from the series); this turns them into clickable links.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
 
   - name: Loki
     uid: loki
@@ -18,3 +23,78 @@ datasources:
     access: proxy
     url: http://loki:3100
     editable: true
+
+    jsonData:
+      # Logs -> traces. The backend logs `trace_id=<hex>` on every line (see
+      # backend/app/tracing.py); this regex turns that token into a link that
+      # opens the trace in Tempo.
+      derivedFields:
+        - name: TraceID
+          matcherRegex: 'trace_id=(\w+)'
+          # $$ escapes Grafana's env-var interpolation in provisioning files;
+          # Grafana receives the literal ${__value.raw} (the captured group).
+          url: '$${__value.raw}'
+          datasourceUid: tempo
+          urlDisplayLabel: 'View trace'
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: true
+
+    jsonData:
+      # --- trace -> logs: from a span, jump to that container's logs in Loki
+      # within a window around the span. `service.name` on the span is matched
+      # against Loki's `service` label (set by promtail from the compose
+      # service name), so the two line up.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: '-2m'
+        spanEndTimeShift: '2m'
+        filterByTraceID: true
+        filterBySpanID: false
+        tags:
+          - key: 'service.name'
+            value: 'service'
+
+      # --- trace -> metrics: from a span, jump to the RED metrics for that
+      # same route, so you can see whether the slow request was an outlier.
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: '-2m'
+        spanEndTimeShift: '2m'
+        tags:
+          - key: 'service.name'
+            value: 'service'
+        queries:
+          - name: 'Request rate'
+            query: 'sum(rate(traces_spanmetrics_calls_total{$$__tags}[5m]))'
+          - name: 'Error rate'
+            query: 'sum(rate(traces_spanmetrics_calls_total{$$__tags, status_code="STATUS_CODE_ERROR"}[5m]))'
+          - name: 'p95 latency'
+            query: 'histogram_quantile(0.95, sum(rate(traces_spanmetrics_latency_bucket{$$__tags}[5m])) by (le))'
+
+      # --- Service Map: rendered from traces_service_graph_* which Tempo's
+      # metrics_generator remote-writes into Prometheus.
+      serviceMap:
+        datasourceUid: prometheus
+
+      nodeGraph:
+        enabled: true
+
+      # TraceQL search tab (Search / TraceQL / Service Graph).
+      search:
+        hide: false
+
+      traceQuery:
+        timeShiftEnabled: true
+        spanStartTimeShift: '-2m'
+        spanEndTimeShift: '2m'
+
+      # Colour the mini duration bar in the waterfall by the HTTP route, so a
+      # trace is readable at a glance without expanding every span.
+      spanBar:
+        type: 'Tag'
+        tag: 'http.route'

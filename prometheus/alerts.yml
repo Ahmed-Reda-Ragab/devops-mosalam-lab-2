@@ -271,3 +271,48 @@ groups:
         annotations:
           summary: 'Alertmanager is failing to deliver notifications'
           description: 'Alertmanager could not deliver notifications via {{ $labels.integration }} (e.g. Telegram) — check the bot token, chat_id and network egress.'
+
+  # --- Tracing pipeline self-health ---
+  # A tracing pipeline fails silently: traces just stop appearing, and the
+  # symptom (empty Tempo) looks identical to "no traffic". These rules make the
+  # difference observable.
+  - name: tracing
+    rules:
+      - alert: OtelCollectorRefusingSpans
+        expr: rate(otelcol_receiver_refused_spans_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'OpenTelemetry Collector is refusing spans'
+          description: 'The memory_limiter is pushing back (receiver {{ $labels.receiver }}). Raise the collector mem_limit or lower the sampling rate.'
+
+      - alert: OtelCollectorExportFailing
+        expr: rate(otelcol_exporter_send_failed_spans_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'OpenTelemetry Collector cannot ship spans to Tempo'
+          description: 'Exporter {{ $labels.exporter }} has been failing for over 5 minutes — traces are being dropped. Check that Tempo is up and reachable on monitoring-network.'
+
+      - alert: TempoDiscardingSpans
+        expr: rate(tempo_discarded_spans_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Tempo is discarding spans'
+          description: 'Tempo dropped spans (reason: {{ $labels.reason }}) — usually rate limits or traces exceeding the max size.'
+
+      # Tempo's metrics generator is what feeds the Service Map and the RED
+      # span-metrics panels; if the remote_write to Prometheus breaks, those go
+      # blank while traces themselves keep working.
+      - alert: TempoMetricsGeneratorWriteFailing
+        expr: rate(prometheus_remote_storage_samples_failed_total{job="tempo"}[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Tempo metrics-generator cannot remote-write to Prometheus'
+          description: 'Span metrics / service-graph series are not reaching Prometheus. Verify Prometheus runs with --web.enable-remote-write-receiver.'

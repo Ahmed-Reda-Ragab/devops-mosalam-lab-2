@@ -1,0 +1,76 @@
+# Grafana Tempo — the trace store. Same role Loki plays for logs and
+# Prometheus plays for metrics: it ingests, indexes and retains spans, and
+# Grafana queries it as a datasource.
+#
+# Ingest path in this stack:
+#   backend / traefik --(OTLP gRPC)--> otel-collector --(OTLP gRPC)--> tempo
+# Tempo also opens its own OTLP receivers below so anything can push directly
+# to it if the collector is bypassed (useful when debugging).
+
+server:
+  http_listen_port: 3200   # API + /metrics; this is what Grafana talks to
+  grpc_listen_port: 9095
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  # Cut a block every 5m so freshly received traces become searchable quickly
+  # (the default is 30m, which feels "broken" on a small demo stack).
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    # Single VM, local disk: keep 48h of traces. Traces are far heavier than
+    # metrics, so retention is deliberately short.
+    block_retention: 48h
+
+# --- metrics_generator ------------------------------------------------------
+# Turns spans into Prometheus series *as they are ingested*:
+#   * span-metrics  -> traces_spanmetrics_* (RED: rate/errors/duration per
+#                      service+route) with exemplars pointing at real traces.
+#   * service-graphs -> traces_service_graph_* which powers Grafana's Service
+#                      Map (who calls whom, at what latency/error rate).
+#   * local-blocks   -> required for TraceQL metrics queries in Grafana.
+# It remote-writes into Prometheus, which therefore needs
+#   --web.enable-remote-write-receiver  (and --enable-feature=exemplar-storage
+# for the exemplar links). Both are set in docker-compose.monitoring.yml.
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      # Prometheus runs behind --web.route-prefix=/prometheus, so the write
+      # endpoint carries that prefix too.
+      - url: http://prometheus:9090/prometheus/api/v1/write
+        send_exemplars: true
+  traces_storage:
+    path: /var/tempo/generator/traces
+  processor:
+    local_blocks:
+      flush_to_storage: true
+
+storage:
+  trace:
+    backend: local          # swap for s3/gcs when this outgrows one host
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+# Per-tenant limits. Single-tenant here, so these are the defaults for everyone.
+overrides:
+  defaults:
+    metrics_generator:
+      processors:
+        - service-graphs
+        - span-metrics
+        - local-blocks
