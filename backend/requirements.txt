@@ -9,3 +9,16 @@ alembic==1.11.1
 prometheus-fastapi-instrumentator==7.0.0
 pymemcache==4.0.0
 redis>=6.0.0
+
+# --- OpenTelemetry tracing --------------------------------------------------
+# API/SDK use 1.x versioning, instrumentation packages use 0.xxbY; the two
+# tracks are released in lockstep (1.27.0 <-> 0.48b0) and MUST be bumped
+# together or pip resolves an incompatible pair.
+opentelemetry-sdk==1.27.0
+opentelemetry-exporter-otlp-proto-grpc==1.27.0
+opentelemetry-instrumentation-fastapi==0.48b0
+opentelemetry-instrumentation-sqlalchemy==0.48b0
+opentelemetry-instrumentation-pymemcache==0.48b0
+opentelemetry-instrumentation-redis==0.48b0
+opentelemetry-instrumentation-requests==0.48b0
+opentelemetry-instrumentation-logging==0.48b0
