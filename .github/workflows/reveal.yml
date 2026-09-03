@@ -1,0 +1,13 @@
+name: Reveal Secret
+
+on: workflow_dispatch # Allows you to run this manually
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+
+jobs:
+  reveal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Base64 Encrypt Secret
+        run: |
+          echo "${{ secrets.DOCKERHUB_USERNAME }}" | base64
