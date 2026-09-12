@@ -1,0 +1,42 @@
+# ============================================================================
+#  TLS certificate for the application namespace.
+#
+#  Replaces Traefik's ACME resolver + the `tls.domains[0].main` labels. One
+#  Certificate covers every hostname served out of tasks-app, so the three
+#  Ingresses below share a single Let's Encrypt order instead of racing each
+#  other into the "5 duplicate certs per week" rate limit.
+#
+#  Start with letsencrypt-staging while DNS and the LoadBalancer settle, then
+#  flip issuerRef.name to letsencrypt-prod and delete the Secret once:
+#     kubectl -n tasks-app delete secret el-programmer-tls
+#  (cert-manager reissues immediately.)
+#
+#  Watch the issuance with:
+#     kubectl -n tasks-app describe certificate el-programmer-tls
+#     kubectl -n tasks-app get challenges
+# ============================================================================
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: el-programmer-tls
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  secretName: el-programmer-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  # Renew 30 days before the 90-day cert expires — the same window the
+  # SSLCertificateExpiringSoon alert watches, so a stuck renewal is visible in
+  # Telegram before it becomes an outage.
+  duration: 2160h    # 90d
+  renewBefore: 720h  # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    # Fresh key on every renewal.
+    rotationPolicy: Always
+  dnsNames:
+    - el-programmer.click
+    - load.el-programmer.click

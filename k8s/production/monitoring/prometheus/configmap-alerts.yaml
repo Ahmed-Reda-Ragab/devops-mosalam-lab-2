@@ -1,0 +1,408 @@
+# ############################################################################
+#  ALERTING RULES — ported from prometheus/alerts.yml.
+#
+#  Mapping of the original required alerts -> the rule that implements each:
+#    1) API is slow ............. BackendHighLatencyP95  (+ BackendHighErrorRate)
+#    2) DB usage is high ........ ContainerNearMemoryLimit / ContainerCPUThrottling
+#    3) A container went down ... TargetDown + DatabaseDown / FrontendDown /
+#                                 ReverseProxyDown / ContainerRestarting
+#    4) Memory almost full ...... ContainerNearMemoryLimit + HostHighMemory
+#    5) SSL about to expire ..... SSLCertificateExpiringSoon (via blackbox probe)
+#
+#  WHAT CHANGED IN THE PORT
+#  The `availability` and `containers` groups used cAdvisor's Docker-specific
+#  labels (container_label_com_docker_compose_service, name=~".+"). Those labels
+#  do not exist in Kubernetes — the rules would evaluate to nothing and sit
+#  silently green forever, which is the worst possible failure mode for an
+#  alert. They are rewritten against kube-state-metrics and the kubelet's
+#  cAdvisor labels (namespace / pod / container).
+#
+#  Every other group (backend, host, tls, monitoring, tracing) is UNCHANGED —
+#  those metrics come from node-exporter, blackbox, the app and the tracing
+#  pipeline, none of which care what orchestrator they run under.
+# ############################################################################
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: task-manager
+data:
+  alerts.yml: |
+    groups:
+      # --- Availability -----------------------------------------------------
+      - name: availability
+        rules:
+          - alert: TargetDown
+            expr: up == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'Target {{ $labels.job }} is down'
+              description: '{{ $labels.instance }} (job {{ $labels.job }}) has been unreachable for over 1 minute.'
+
+          # Was: absent(container_last_seen{container_label_com_docker_compose_service=~"db|mysql-primary"})
+          # kube-state-metrics reports readiness directly, which is both more
+          # precise (a running-but-unready MySQL still counts as down) and does
+          # not depend on cAdvisor label conventions.
+          - alert: DatabaseDown
+            expr: kube_statefulset_status_replicas_ready{namespace="tasks-db", statefulset="mysql-primary"} < 1
+            for: 2m
+            labels:
+              severity: critical
+              service: db
+            annotations:
+              summary: 'Database (MySQL primary) has no ready replica'
+              description: 'The mysql-primary StatefulSet has 0 ready pods for over 2 minutes — writes are failing.'
+
+          - alert: DatabaseReplicaDown
+            expr: kube_statefulset_status_replicas_ready{namespace="tasks-db", statefulset="mysql-replica"} < 1
+            for: 5m
+            labels:
+              severity: warning
+              service: db
+            annotations:
+              summary: 'MySQL replica has no ready replica'
+              description: 'ProxySQL will route every SELECT to the primary while this lasts — expect higher primary load.'
+
+          - alert: FrontendDown
+            expr: kube_deployment_status_replicas_available{namespace="tasks-app", deployment="frontend"} < 1
+            for: 2m
+            labels:
+              severity: critical
+              service: frontend
+            annotations:
+              summary: 'Frontend has no available pods'
+              description: 'The frontend Deployment has 0 available replicas for over 2 minutes — the site is not being served.'
+
+          # Was ReverseProxyDown (nginx|traefik container). The edge is now the
+          # ingress-nginx controller.
+          - alert: ReverseProxyDown
+            expr: sum(kube_deployment_status_replicas_available{namespace="ingress-nginx"}) < 1
+            for: 2m
+            labels:
+              severity: critical
+              service: proxy
+            annotations:
+              summary: 'ingress-nginx controller has no available pods'
+              description: 'No ingress controller replica is available — the whole site is unreachable from outside.'
+
+          - alert: BackendNoAvailablePods
+            expr: kube_deployment_status_replicas_available{namespace="tasks-app", deployment="backend"} < 1
+            for: 2m
+            labels:
+              severity: critical
+              service: backend
+            annotations:
+              summary: 'Backend has no available pods'
+              description: 'The backend Deployment has 0 available replicas — /api is returning 503.'
+
+      # --- Containers (kubelet cAdvisor + kube-state-metrics) ---------------
+      - name: containers
+        rules:
+          # container!="" drops the pod-level "pause" sandbox series, which has
+          # no limit and would otherwise divide by zero.
+          - alert: ContainerNearMemoryLimit
+            expr: |
+              container_memory_working_set_bytes{container!="", container!="POD"}
+                / (container_spec_memory_limit_bytes{container!="", container!="POD"} > 0) > 0.9
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'Container {{ $labels.container }} in {{ $labels.pod }} is near its memory limit'
+              description: '{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} is using {{ $value | humanizePercentage }} of its memory limit (OOM risk).'
+
+          - alert: ContainerOOMKilled
+            expr: |
+              kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+                and on (namespace, pod, container)
+              increase(kube_pod_container_status_restarts_total[10m]) > 0
+            for: 0m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'Container {{ $labels.container }} in {{ $labels.pod }} was OOM-killed'
+              description: '{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} hit its memory limit and was killed in the last 10 minutes.'
+
+          - alert: ContainerCPUThrottling
+            expr: |
+              rate(container_cpu_cfs_throttled_periods_total{container!="", container!="POD"}[5m])
+                / rate(container_cpu_cfs_periods_total{container!="", container!="POD"}[5m]) > 0.25
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'Container {{ $labels.container }} in {{ $labels.pod }} is CPU throttled'
+              description: '{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} is hitting its CPU limit ({{ $value | humanizePercentage }} of periods throttled).'
+
+          - alert: ContainerRestarting
+            expr: increase(kube_pod_container_status_restarts_total[15m]) > 3
+            for: 0m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'Container {{ $labels.container }} in {{ $labels.pod }} is crash-looping'
+              description: '{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} restarted more than 3 times in the last 15 minutes.'
+
+      # --- Backend application (RED) — UNCHANGED from the Compose version ---
+      - name: backend
+        rules:
+          - alert: BackendHighErrorRate
+            expr: 100 * sum(rate(http_requests_total{job="backend",status=~"5.."}[5m])) / sum(rate(http_requests_total{job="backend"}[5m])) > 10
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'Backend 5xx error rate is high'
+              description: '5xx errors are {{ $value | printf "%.1f" }}% of requests over the last 5m.'
+
+          - alert: BackendHighLatencyP95
+            expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job="backend"}[5m]))) > 1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'Backend p95 latency is high'
+              description: 'p95 latency is {{ $value | printf "%.2f" }}s over the last 5m.'
+
+      # --- Host (node-exporter) — UNCHANGED ---------------------------------
+      - name: host
+        rules:
+          - alert: HostDiskAlmostFull
+            expr: 100 * (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}) < 15
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'Disk almost full on {{ $labels.mountpoint }}'
+              description: 'Only {{ $value | printf "%.1f" }}% free on {{ $labels.mountpoint }} ({{ $labels.device }}) on node {{ $labels.instance }}.'
+
+          # Trend-based: the disk is on a path to fill within 24h. Catches slow
+          # leaks (logs, images) long before HostDiskAlmostFull would fire.
+          - alert: HostDiskWillFillSoon
+            expr: |
+              predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}[6h], 24 * 3600) < 0
+              and
+              node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.4
+            for: 30m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'Disk on {{ $labels.mountpoint }} will fill within 24h'
+              description: 'At the current growth rate {{ $labels.mountpoint }} ({{ $labels.device }}) is projected to run out of space in under 24 hours.'
+
+          - alert: HostFilesystemReadOnly
+            expr: node_filesystem_readonly{fstype!~"tmpfs|overlay|squashfs"} == 1
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'Filesystem {{ $labels.mountpoint }} is read-only'
+              description: '{{ $labels.mountpoint }} ({{ $labels.device }}) has been mounted read-only — usually a sign of disk corruption or failure.'
+
+          - alert: HostHighCPU
+            expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'High CPU usage on node {{ $labels.instance }}'
+              description: 'Node CPU usage is {{ $value | printf "%.1f" }}% over the last 5m.'
+
+          - alert: HostHighMemory
+            expr: 100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 90
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'High memory usage on node {{ $labels.instance }}'
+              description: 'Node memory usage is {{ $value | printf "%.1f" }}%.'
+
+      # --- Kubernetes-specific: no Compose equivalent existed ----------------
+      # These cover the failure modes the platform itself introduced.
+      - name: kubernetes
+        rules:
+          # THE most important new alert in this stack. A full MySQL PVC is a
+          # hard outage that no amount of pod restarting fixes, and unlike a
+          # host disk you cannot just `rm` something to recover.
+          - alert: PersistentVolumeAlmostFull
+            expr: |
+              100 * kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 15
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'PVC {{ $labels.persistentvolumeclaim }} is almost full'
+              description: 'Only {{ $value | printf "%.1f" }}% free on {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}. Expand the PVC — pods cannot recover from a full volume on their own.'
+
+          - alert: PersistentVolumeWillFillSoon
+            expr: |
+              predict_linear(kubelet_volume_stats_available_bytes[6h], 4 * 24 * 3600) < 0
+              and
+              kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.4
+            for: 1h
+            labels:
+              severity: warning
+            annotations:
+              summary: 'PVC {{ $labels.persistentvolumeclaim }} will fill within 4 days'
+              description: 'At the current growth rate {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} runs out of space in under 4 days.'
+
+          - alert: PodNotReady
+            expr: |
+              sum by (namespace, pod) (
+                max by (namespace, pod) (kube_pod_status_phase{phase=~"Pending|Unknown"})
+                * on (namespace, pod) group_left
+                  max by (namespace, pod) (kube_pod_owner{owner_kind!="Job"})
+              ) > 0
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} has been not-ready for 15m'
+              description: 'Usually unschedulable (no node has room / no matching zone for the PVC) or stuck pulling its image.'
+
+          # The backup CronJob is invisible until you need it. Alert when a run
+          # fails, and when no run has happened in over a day.
+          - alert: BackupJobFailed
+            expr: kube_job_status_failed{namespace="tasks-db", job_name=~"mysql-backup.*"} > 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'MySQL backup Job failed'
+              description: 'Job {{ $labels.job_name }} failed. You currently have no fresh backup.'
+
+          - alert: BackupDidNotRun
+            expr: time() - kube_cronjob_status_last_schedule_time{namespace="tasks-db", cronjob="mysql-backup"} > 26 * 3600
+            for: 1h
+            labels:
+              severity: critical
+            annotations:
+              summary: 'MySQL backup has not run in over 26 hours'
+              description: 'The nightly CronJob has not been scheduled since {{ $value | humanizeDuration }} ago — check for a suspended CronJob or a stuck Job.'
+
+          - alert: HPAAtMaxReplicas
+            expr: |
+              kube_horizontalpodautoscaler_status_current_replicas
+                >= kube_horizontalpodautoscaler_spec_max_replicas
+            for: 15m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} is pinned at max'
+              description: 'It cannot scale out further — this is the ceiling, and load above it turns into latency. Raise maxReplicas or find the bottleneck.'
+
+      # --- HTTPS / TLS — UNCHANGED ------------------------------------------
+      # Fed by the blackbox exporter probing https://el-programmer.click, now
+      # served by ingress-nginx with a cert-manager certificate.
+      - name: tls
+        rules:
+          - alert: HTTPSProbeFailed
+            expr: probe_success == 0
+            for: 2m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'HTTPS probe failed for {{ $labels.instance }}'
+              description: 'The HTTPS probe for {{ $labels.instance }} has failed for over 2 minutes.'
+
+          - alert: SSLCertificateExpiringSoon
+            expr: probe_ssl_earliest_cert_expiry - time() < 7 * 24 * 3600
+            for: 1h
+            labels:
+              severity: warning
+            annotations:
+              summary: 'TLS certificate expires soon for {{ $labels.instance }}'
+              description: 'The TLS certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }} (approximately {{ (($value / 86400) | printf "%.1f") }} days).'
+
+          - alert: SSLCertificateExpiringSoonCritical
+            expr: probe_ssl_earliest_cert_expiry - time() < 2 * 24 * 3600
+            for: 10m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'TLS certificate expires VERY SOON for {{ $labels.instance }}'
+              description: 'URGENT: the TLS certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }}. cert-manager renews at 30 days remaining, so this means renewal is BROKEN — check `kubectl get certificate,challenge -A`.'
+
+      # --- Monitoring self-health — UNCHANGED -------------------------------
+      - name: monitoring
+        rules:
+          - alert: PrometheusConfigReloadFailed
+            expr: prometheus_config_last_reload_successful == 0
+            for: 0m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'Prometheus config reload failed'
+              description: 'The last reload of prometheus.yml failed — check the config syntax in the prometheus-config ConfigMap.'
+
+          - alert: PrometheusNotConnectedToAlertmanager
+            expr: prometheus_notifications_alertmanagers_discovered < 1
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'Prometheus is not connected to any Alertmanager'
+              description: 'Prometheus has 0 Alertmanagers discovered — no alert would ever be delivered.'
+
+          - alert: PrometheusAlertDeliveryFailing
+            expr: rate(prometheus_notifications_errors_total[5m]) > 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'Prometheus is failing to send alerts to Alertmanager'
+              description: 'Prometheus has been getting errors while pushing alerts to Alertmanager for over 5 minutes.'
+
+          - alert: AlertmanagerNotificationFailing
+            expr: rate(alertmanager_notifications_failed_total[5m]) > 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'Alertmanager is failing to deliver notifications'
+              description: 'Alertmanager could not deliver notifications via {{ $labels.integration }} (e.g. Telegram) — check the bot token, chat_id and network egress from the cluster.'
+
+      # --- Tracing pipeline self-health — UNCHANGED -------------------------
+      - name: tracing
+        rules:
+          - alert: OtelCollectorRefusingSpans
+            expr: rate(otelcol_receiver_refused_spans_total[5m]) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'OpenTelemetry Collector is refusing spans'
+              description: 'The memory_limiter is pushing back (receiver {{ $labels.receiver }}). Raise the collector memory limit or lower the sampling rate.'
+
+          - alert: OtelCollectorExportFailing
+            expr: rate(otelcol_exporter_send_failed_spans_total[5m]) > 0
+            for: 5m
+            labels:
+              severity: critical
+            annotations:
+              summary: 'OpenTelemetry Collector cannot ship spans to Tempo'
+              description: 'Exporter {{ $labels.exporter }} has been failing for over 5 minutes — traces are being dropped. Check that Tempo is up and that no NetworkPolicy blocks otel-collector -> tempo:4317.'
+
+          - alert: TempoDiscardingSpans
+            expr: rate(tempo_discarded_spans_total[5m]) > 0
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'Tempo is discarding spans'
+              description: 'Tempo dropped spans (reason: {{ $labels.reason }}) — usually rate limits or traces exceeding the max size.'
+
+          - alert: TempoMetricsGeneratorWriteFailing
+            expr: rate(prometheus_remote_storage_samples_failed_total{job="tempo"}[5m]) > 0
+            for: 10m
+            labels:
+              severity: warning
+            annotations:
+              summary: 'Tempo metrics-generator cannot remote-write to Prometheus'
+              description: 'Span metrics / service-graph series are not reaching Prometheus. Verify Prometheus runs with --web.enable-remote-write-receiver.'

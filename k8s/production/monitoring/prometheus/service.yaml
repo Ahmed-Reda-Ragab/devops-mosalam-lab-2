@@ -1,0 +1,26 @@
+# ============================================================================
+#  Compose published 9090 on the host for debugging. Here it is a ClusterIP:
+#  the UI is reached through the Ingress at /prometheus, and for ad-hoc access
+#     kubectl -n monitoring port-forward svc/prometheus 9090:9090
+#  is both easier and does not open a port to the world.
+#
+#  Tempo's metrics_generator remote-writes to this Service.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: task-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+      protocol: TCP

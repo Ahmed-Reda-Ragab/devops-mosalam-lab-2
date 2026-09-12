@@ -1,0 +1,17 @@
+# ============================================================================
+#  Non-secret database configuration — the k8s equivalent of compose/.env.
+#  Passwords live in the mysql-secrets Secret, never here.
+#
+#  Consumed by: mysql-primary (MYSQL_DATABASE / MYSQL_USER) and the ProxySQL
+#  config loader (which creates the matching frontend user).
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-config
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/part-of: task-manager
+data:
+  DB_DATABASE: appdb
+  DB_USERNAME: appuser

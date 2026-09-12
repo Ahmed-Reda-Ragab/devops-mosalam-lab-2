@@ -1,0 +1,48 @@
+# ============================================================================
+#  cert-manager ClusterIssuer — replaces Traefik's built-in ACME resolver
+#  ("certificatesresolvers.le" in compose/docker-compose.apps.yml).
+#
+#  Same challenge type as before: HTTP-01, solved by the ingress-nginx
+#  controller on :80. The prerequisites are unchanged:
+#    1) DNS  el-programmer.click  ->  the ingress LoadBalancer address
+#    2) port 80 reachable from the internet
+#
+#  REQUIRES cert-manager to be installed in the cluster first:
+#    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
+#  (or manage it as its own Argo CD Application — see k8s/README.md).
+#
+#  Two issuers are defined:
+#    letsencrypt-staging -> use while testing. Untrusted cert, but NO rate
+#                           limits, so a broken DNS/ingress setup costs nothing.
+#    letsencrypt-prod    -> the real thing. Only 5 duplicate certs per domain
+#                           per week, so switch to it once staging succeeds.
+# ============================================================================
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: info@el-programmer.click
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: info@el-programmer.click
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: nginx

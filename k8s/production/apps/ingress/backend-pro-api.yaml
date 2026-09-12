@@ -1,0 +1,46 @@
+# ============================================================================
+#  /pro-api — the same API with NO middlewares (demo route). Compose:
+#     traefik.http.routers.proBackend.rule=PathPrefix(`/pro-api`)
+#     traefik.http.middlewares.pro-api-rewrite.replacepathregex.regex=^/pro-api/(.*)
+#     ...replacement=/api/$1
+#
+#  Separate Ingress object because it must NOT inherit the api-key /
+#  rate-limit annotations from backend-api.yaml — annotations are per-Ingress.
+#
+#  The capture groups: path `/pro-api(/|$)(.*)` puts the separator in $1 and
+#  the remainder in $2, so rewrite-target uses $2. This also handles a bare
+#  `/pro-api` with no trailing slash, which the Traefik regex did not.
+#
+#  ⚠️  This route is unauthenticated and unthrottled by design (it was in the
+#  Compose stack too). On a real deployment it is a free, rate-limit-free door
+#  into the database — consider deleting this file entirely.
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend-pro-api
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /api/$2
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - el-programmer.click
+      secretName: el-programmer-tls
+  rules:
+    - host: el-programmer.click
+      http:
+        paths:
+          - path: /pro-api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: backend
+                port:
+                  name: http

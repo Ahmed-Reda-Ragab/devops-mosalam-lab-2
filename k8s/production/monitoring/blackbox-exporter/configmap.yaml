@@ -1,0 +1,37 @@
+# ============================================================================
+#  Blackbox probe modules — verbatim from prometheus/blackbox.yml.
+#  Prometheus (job "blackbox") calls this module against the target URL and
+#  gets back probe_success + probe_ssl_earliest_cert_expiry, which is what the
+#  SSLCertificateExpiringSoon alert reads.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blackbox-exporter-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: blackbox-exporter
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: task-manager
+data:
+  config.yml: |
+    modules:
+      https_2xx:
+        prober: http
+        timeout: 5s
+        http:
+          preferred_ip_protocol: ip4
+          # These are all treated as "site is up" (auth-protected pages return
+          # 401/403).
+          valid_status_codes: [200, 301, 302, 401, 403]
+          method: GET
+          tls_config:
+            # false = verify the certificate chain. cert-manager serves a real
+            # Let's Encrypt cert, so verification passes and a broken/expired/
+            # misconfigured chain would (correctly) fail the probe.
+            # NOTE: in the first minutes after a fresh install — before ACME has
+            # finished issuing — ingress-nginx serves its self-signed default
+            # cert, so HTTPSProbeFailed fires briefly until the real cert lands.
+            # If you deployed with letsencrypt-STAGING, this stays failing:
+            # the staging chain is untrusted by design.
+            insecure_skip_verify: false

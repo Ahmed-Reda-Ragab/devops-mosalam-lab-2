@@ -1,0 +1,39 @@
+# ============================================================================
+#  Security response headers — the ingress-nginx replacement for Traefik's
+#  "security-headers@file" middleware (traefik/dynamic/security.yml).
+#
+#  ingress-nginx has no per-Ingress "add these headers" annotation that works
+#  without snippets, so the headers are set CONTROLLER-WIDE via the `add-headers`
+#  option, which points at this ConfigMap. Every response the controller emits
+#  gets them — a superset of the old behaviour (Traefik only applied them to the
+#  backend router).
+#
+#  Wire it up in the controller's own ConfigMap (see
+#  ingress-nginx-values.yaml.example):
+#      add-headers: "ingress-nginx/custom-headers"
+#
+#  NOTE ON HSTS: do NOT add Strict-Transport-Security here. ingress-nginx
+#  already emits it (hsts=true by default) and duplicating the header makes
+#  browsers ignore both. Tune it with hsts-max-age / hsts-include-subdomains
+#  in the controller ConfigMap instead.
+#
+#  NOTE ON THE NAMESPACE: this lands in `ingress-nginx`, the namespace the
+#  controller is installed into. Change it if yours differs.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-headers
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/part-of: task-manager
+data:
+  # contentTypeNosniff: true
+  X-Content-Type-Options: "nosniff"
+  # frameDeny: true
+  X-Frame-Options: "DENY"
+  # browserXssFilter: true (legacy; modern browsers rely on CSP instead)
+  X-XSS-Protection: "1; mode=block"
+  # Traefik set `Server: ""` to hide the proxy. nginx cannot emit an empty
+  # header, so the equivalent is server-tokens=off in the controller ConfigMap.
+  Referrer-Policy: "strict-origin-when-cross-origin"

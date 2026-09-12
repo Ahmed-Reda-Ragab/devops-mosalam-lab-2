@@ -1,0 +1,80 @@
+# ============================================================================
+#  /docker-entrypoint-initdb.d for the primary. Runs ONCE, on the very first
+#  boot with an empty data directory (the PVC is empty). Ported from:
+#    backend/init.sql                       -> 00-schema.sql
+#    mysql/primary/init/10-replication.sh   -> 10-replication.sh
+#
+#  Both statements sets run AFTER binlog+GTID are on, so they replicate to the
+#  replica automatically — same as in Compose.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-primary-init
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-primary
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: task-manager
+data:
+  00-schema.sql: |
+    CREATE DATABASE IF NOT EXISTS appdb;
+    USE appdb;
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      description TEXT NULL,
+      status ENUM('pending','completed') NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO tasks (name, description, status) VALUES
+    ('Buy groceries', 'Milk, eggs, bread, and coffee', 'pending'),
+    ('Read project documentation', 'Review the requirements and design decisions', 'completed'),
+    ('Update deployment scripts', 'Prepare Kubernetes manifests and GitOps wiring', 'pending'),
+    ('Schedule team meeting', 'Book conference room for planning session', 'pending'),
+    ('Clean workspace', 'Organize files and remove old containers', 'completed');
+
+  10-replication.sh: |
+    #!/bin/bash
+    ###########################################################################
+    # Creates the accounts the replica and ProxySQL need.
+    #
+    # Difference from the Compose version: MONITOR_PW is no longer the literal
+    # "monitor123" — it comes from the mysql-secrets Secret, the same value the
+    # ProxySQL config loader pushes into ProxySQL's monitor_password.
+    ###########################################################################
+    set -euo pipefail
+
+    SOCKET="/var/lib/mysql/mysql.sock"
+
+    ROOT_PW="$(cat /run/secrets/mysql_root_password)"
+    REPL_PW="$(cat /run/secrets/replication_password)"
+    APP_PW="$(cat /run/secrets/db_password)"
+    MONITOR_PW="$(cat /run/secrets/monitor_password)"
+
+    APP_USER="${MYSQL_USER:-appuser}"
+    APP_DB="${MYSQL_DATABASE:-appdb}"
+
+    mysql --socket="${SOCKET}" -uroot -p"${ROOT_PW}" <<SQL
+    -- Replication account used by the replica's IO thread.
+    -- mysql_native_password avoids the caching_sha2 TLS / public-key handshake
+    -- over the cluster network.
+    CREATE USER IF NOT EXISTS 'replica'@'%' IDENTIFIED WITH mysql_native_password BY '${REPL_PW}';
+    GRANT REPLICATION SLAVE ON *.* TO 'replica'@'%';
+
+    -- Account ProxySQL uses to monitor server health and the read_only flag.
+    CREATE USER IF NOT EXISTS 'monitor'@'%' IDENTIFIED WITH mysql_native_password BY '${MONITOR_PW}';
+    GRANT USAGE, REPLICATION CLIENT ON *.* TO 'monitor'@'%';
+
+    -- Application user. Switch it to native auth so ProxySQL can authenticate
+    -- against the backend, and (re)grant it on the app database.
+    ALTER USER '${APP_USER}'@'%' IDENTIFIED WITH mysql_native_password BY '${APP_PW}';
+    GRANT ALL PRIVILEGES ON \`${APP_DB}\`.* TO '${APP_USER}'@'%';
+
+    FLUSH PRIVILEGES;
+    SQL
+
+    echo "[primary-init] replication / monitor / application accounts created."

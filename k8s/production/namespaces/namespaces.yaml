@@ -1,0 +1,44 @@
+# ============================================================================
+#  Namespaces — the Kubernetes replacement for the three Compose networks.
+#
+#  Compose                     ->  Kubernetes
+#  --------------------------------------------------------------------------
+#  private-network (internal)  ->  namespace  tasks-app     + NetworkPolicy
+#  db-network                  ->  namespace  tasks-db      + NetworkPolicy
+#  monitoring-network          ->  namespace  monitoring    + NetworkPolicy
+#  public-network              ->  the ingress-nginx controller (its own ns)
+#
+#  Pod Security Standards:
+#    tasks-app / tasks-db  -> "baseline" (blocks privileged pods; nginx and
+#                             mysql still run fine).
+#    monitoring            -> "privileged": node-exporter and cAdvisor need
+#                             hostPath + hostPID to read the node.
+# ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tasks-app
+  labels:
+    app.kubernetes.io/part-of: task-manager
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tasks-db
+  labels:
+    app.kubernetes.io/part-of: task-manager
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: task-manager
+    # node-exporter + cAdvisor mount /proc, /sys and / from the host.
+    pod-security.kubernetes.io/enforce: privileged

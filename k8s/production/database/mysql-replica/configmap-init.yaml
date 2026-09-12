@@ -1,0 +1,69 @@
+# ============================================================================
+#  /docker-entrypoint-initdb.d for the replica. Ported from
+#  mysql/replica/init/10-start-replica.sh, with one change: PRIMARY_HOST is now
+#  the in-cluster FQDN of the primary's headless Service.
+#
+#  Runs ONCE on the first boot. After that the replication coordinates live in
+#  the replica's own data dir (mysql.slave_master_info) on the PVC, so
+#  replication resumes automatically on every restart / reschedule.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-replica-init
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-replica
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: task-manager
+data:
+  10-start-replica.sh: |
+    #!/bin/bash
+    ###########################################################################
+    # Points the replica at the primary using GTID auto-positioning and starts
+    # replication.
+    ###########################################################################
+    set -euo pipefail
+
+    SOCKET="/var/lib/mysql/mysql.sock"
+
+    ROOT_PW="$(cat /run/secrets/mysql_root_password)"
+    REPL_PW="$(cat /run/secrets/replication_password)"
+
+    # Compose used the bare Docker DNS name "mysql-primary". Here it is the
+    # headless Service; the FQDN is spelled out so this keeps working even if
+    # the pod's search domains change.
+    PRIMARY_HOST="mysql-primary.tasks-db.svc.cluster.local"
+    PRIMARY_PORT="3306"
+
+    # Wait until the primary is up AND the replication account actually works.
+    # In Compose this was guaranteed by depends_on: service_healthy; k8s has no
+    # cross-pod ordering, so the wait loop is what enforces it.
+    echo "[replica-init] waiting for ${PRIMARY_HOST} replication account..."
+    until mysql -h"${PRIMARY_HOST}" -P"${PRIMARY_PORT}" -ureplica -p"${REPL_PW}" -e "SELECT 1" >/dev/null 2>&1; do
+      sleep 3
+    done
+
+    mysql --socket="${SOCKET}" -uroot -p"${ROOT_PW}" <<SQL
+    STOP REPLICA;
+
+    -- Clear any GTIDs generated locally while this replica's data dir was
+    -- initialized, so GTID auto-positioning pulls a clean history from the
+    -- primary and we avoid "errant transactions".
+    RESET MASTER;
+
+    CHANGE REPLICATION SOURCE TO
+      SOURCE_HOST          = '${PRIMARY_HOST}',
+      SOURCE_PORT          = ${PRIMARY_PORT},
+      SOURCE_USER          = 'replica',
+      SOURCE_PASSWORD      = '${REPL_PW}',
+      SOURCE_AUTO_POSITION = 1;
+
+    START REPLICA;
+
+    -- Full read-only protection, persisted so it survives restarts.
+    -- (Replication threads bypass this, so replication keeps working.)
+    SET PERSIST super_read_only = ON;
+    SQL
+
+    echo "[replica-init] replication started against ${PRIMARY_HOST}."

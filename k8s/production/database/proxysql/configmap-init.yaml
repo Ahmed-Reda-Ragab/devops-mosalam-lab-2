@@ -1,0 +1,123 @@
+# ============================================================================
+#  ProxySQL runtime configuration + the loader that applies it.
+#
+#  In Compose this needed a CUSTOM IMAGE (proxysql/Dockerfile) purely because
+#  the official ProxySQL image ships no mysql client, and startup.sh needed one
+#  to talk to the admin interface. Kubernetes removes that need: the client runs
+#  in a SIDECAR container built from the stock mysql:8.0 image.
+#
+#  Net effect: one fewer image to build, tag, push and keep patched — and the CI
+#  pipeline only has to care about backend + frontend.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxysql-init
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: proxysql
+    app.kubernetes.io/component: database-proxy
+    app.kubernetes.io/part-of: task-manager
+data:
+  # --- Servers / hostgroups / query rules — from proxysql/init.sql ----------
+  init.sql: |
+    -- =======================================================================
+    -- Topology: one primary (writer) + one replica (reader).
+    -- Hostnames are the in-cluster FQDNs of the two headless Services.
+    -- =======================================================================
+
+    -- --- Backend servers ---------------------------------------------------
+    -- Both are registered in the writer hostgroup (10). ProxySQL's monitor then
+    -- reads each server's read_only flag and, using the replication_hostgroups
+    -- mapping below, automatically moves the read-only replica into the reader
+    -- hostgroup (20). This also gives automatic failover if roles change.
+    INSERT INTO mysql_servers (hostgroup_id, hostname, port) VALUES (10, 'mysql-primary.tasks-db.svc.cluster.local', 3306);
+    INSERT INTO mysql_servers (hostgroup_id, hostname, port) VALUES (10, 'mysql-replica.tasks-db.svc.cluster.local', 3306);
+
+    -- --- Automatic read/write split by read_only flag ----------------------
+    INSERT INTO mysql_replication_hostgroups (writer_hostgroup, reader_hostgroup, comment)
+    VALUES (10, 20, 'primary=writer(10), replica=reader(20)');
+
+    -- --- Query routing rules -----------------------------------------------
+    -- Rules are evaluated by rule_id order.
+    --  1) "SELECT ... FOR UPDATE" must read the primary -> hostgroup 10.
+    --  2) Any other SELECT -> reader hostgroup 20.
+    -- Everything else falls through to default_hostgroup (10 = writer).
+    INSERT INTO mysql_query_rules (rule_id, active, match_digest, destination_hostgroup, apply)
+    VALUES (1, 1, '^SELECT.*FOR UPDATE', 10, 1);
+    INSERT INTO mysql_query_rules (rule_id, active, match_digest, destination_hostgroup, apply)
+    VALUES (2, 1, '^SELECT', 20, 1);
+
+    -- --- Monitor tuning ----------------------------------------------------
+    UPDATE global_variables SET variable_value='2000' WHERE variable_name='mysql-monitor_connect_interval';
+    UPDATE global_variables SET variable_value='2000' WHERE variable_name='mysql-monitor_ping_interval';
+    UPDATE global_variables SET variable_value='2000' WHERE variable_name='mysql-monitor_read_only_interval';
+
+    -- --- Persist -----------------------------------------------------------
+    LOAD MYSQL SERVERS TO RUNTIME;
+    SAVE MYSQL SERVERS TO DISK;
+    LOAD MYSQL QUERY RULES TO RUNTIME;
+    SAVE MYSQL QUERY RULES TO DISK;
+    LOAD MYSQL VARIABLES TO RUNTIME;
+    SAVE MYSQL VARIABLES TO DISK;
+
+  # --- The loader — from proxysql/startup.sh, minus the "start proxysql"
+  #     part (that is now the main container's job).
+  load-config.sh: |
+    #!/bin/bash
+    ###########################################################################
+    # ProxySQL config loader (sidecar).
+    #  1. Wait for the admin interface on 127.0.0.1:6032 (same pod = loopback).
+    #  2. Push monitor_password in from the Secret.
+    #  3. Load servers / replication hostgroups / query rules.
+    #  4. Create the application frontend user from the db_password Secret, so
+    #     it always matches the MySQL 'appuser' password.
+    #  5. Touch the readiness sentinel, then idle.
+    ###########################################################################
+    set -euo pipefail
+
+    READY_FILE=/shared/ready
+    rm -f "$READY_FILE"
+
+    # mysql 8.0's client prefers caching_sha2_password; ProxySQL's admin only
+    # speaks mysql_native_password, so ask for it explicitly.
+    ADMIN=(mysql --default-auth=mysql_native_password -h127.0.0.1 -P6032 -uadmin -padmin)
+
+    echo "[proxysql-loader] waiting for admin interface on 127.0.0.1:6032..."
+    until "${ADMIN[@]}" -e "SELECT 1" >/dev/null 2>&1; do
+      sleep 2
+    done
+
+    MONITOR_PW="$(cat /run/secrets/monitor_password)"
+    APP_USER="${DB_USERNAME:-appuser}"
+    APP_PW="$(cat /run/secrets/db_password)"
+
+    echo "[proxysql-loader] setting monitor credentials..."
+    "${ADMIN[@]}" <<SQL
+    UPDATE global_variables SET variable_value='${MONITOR_PW}' WHERE variable_name='mysql-monitor_password';
+    LOAD MYSQL VARIABLES TO RUNTIME;
+    SAVE MYSQL VARIABLES TO DISK;
+    SQL
+
+    echo "[proxysql-loader] loading servers / query rules..."
+    "${ADMIN[@]}" < /etc/proxysql/init.sql
+
+    echo "[proxysql-loader] configuring application user '${APP_USER}'..."
+    "${ADMIN[@]}" <<SQL
+    DELETE FROM mysql_users WHERE username='${APP_USER}';
+    INSERT INTO mysql_users (username, password, default_hostgroup, active, transaction_persistent)
+    VALUES ('${APP_USER}', '${APP_PW}', 10, 1, 1);
+    LOAD MYSQL USERS TO RUNTIME;
+    SAVE MYSQL USERS TO DISK;
+    SQL
+
+    # The main container's readiness probe watches for this file. Until it
+    # exists the pod stays NotReady and the Service sends it no traffic — which
+    # is what stops the backend from connecting to an unconfigured ProxySQL.
+    touch "$READY_FILE"
+    echo "[proxysql-loader] ready. Apps connect on :6033."
+
+    # A container that exits inside a Deployment pod restarts the whole pod, so
+    # park here instead. It also re-runs from scratch on any pod restart, which
+    # is exactly right: ProxySQL boots with --initial and forgets everything.
+    sleep infinity

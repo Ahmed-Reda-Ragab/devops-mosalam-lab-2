@@ -1,0 +1,106 @@
+# ============================================================================
+#  node-exporter — Compose service "node-exporter".
+#
+#  DaemonSet, not Deployment: it reports on the NODE, so exactly one copy must
+#  run on every node, including new ones the autoscaler adds. This is the piece
+#  of the Compose stack that translates most directly — same image, same flags,
+#  same hostPath mounts.
+#
+#  hostNetwork + hostPID are what let it see the real /proc and bind :9100 on
+#  the node's own address. That is why the monitoring namespace is labelled
+#  pod-security.kubernetes.io/enforce: privileged — under `baseline` the
+#  kubelet would refuse this pod.
+# ============================================================================
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: node-exporter
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: task-manager
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: node-exporter
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: node-exporter
+        app.kubernetes.io/component: metrics
+        app.kubernetes.io/part-of: task-manager
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+    spec:
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      priorityClassName: system-node-critical
+      # Run on EVERY node, including control-plane and any node the cluster
+      # autoscaler taints. A node you cannot see is a node you cannot alert on.
+      tolerations:
+        - operator: Exists
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+      containers:
+        - name: node-exporter
+          image: prom/node-exporter:v1.8.2
+          args:
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --path.rootfs=/host/root
+            - --web.listen-address=:9100
+            # Compose excluded ^/(sys|proc|dev|host|etc). On Kubernetes nodes
+            # the same idea needs a few more paths, otherwise every container
+            # overlay and every projected Secret shows up as a "filesystem" and
+            # HostDiskAlmostFull fires on things that are not disks.
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/k3s/containerd/.+|var/lib/docker/.+|var/lib/kubelet/.+|host/(proc|sys|dev|etc))($|/)
+            - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$
+          ports:
+            - name: metrics
+              containerPort: 9100
+              hostPort: 9100
+              protocol: TCP
+          volumeMounts:
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: root
+              mountPath: /host/root
+              mountPropagation: HostToContainer
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: root
+          hostPath:
+            path: /

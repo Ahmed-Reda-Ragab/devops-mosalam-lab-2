@@ -1,0 +1,93 @@
+# ============================================================================
+#  Frontend (static site on nginx) — Compose service "frontend".
+#
+#  ⚠️  IMAGE: replace DOCKERHUB_USERNAME before the first sync.
+#      ./k8s/scripts/set-image-repo.sh <your-dockerhub-username>
+#
+#  The Compose healthcheck carried a long comment about `localhost` resolving
+#  to ::1 inside Alpine while nginx listened on IPv4 only. That problem is gone
+#  here: the kubelet probes the POD IP directly, not a name inside the
+#  container, so there is nothing to resolve.
+#
+#  depends_on: backend is dropped. It was never needed — the frontend serves
+#  static files and the browser calls /api, which the Ingress routes. Making
+#  the frontend wait for the backend only means the site is down when the API
+#  is, instead of showing an error state.
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/component: web
+    app.kubernetes.io/part-of: task-manager
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: frontend
+        app.kubernetes.io/component: web
+        app.kubernetes.io/part-of: task-manager
+    spec:
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+      containers:
+        - name: frontend
+          image: docker.io/DOCKERHUB_USERNAME/task-manager-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              # nginx's master process binds :80, a privileged port.
+              add: ["NET_BIND_SERVICE"]
+            # NOT read-only, deliberately. The stock nginx entrypoint rewrites
+            # /etc/nginx/conf.d/default.conf (the ipv6-by-default script) and
+            # writes /var/run/nginx.pid + /var/cache/nginx at startup; a
+            # read-only root makes the container fail to start. Switching to
+            # nginxinc/nginx-unprivileged would let you turn this on — that is
+            # a Dockerfile change, so out of scope for this conversion.
+            readOnlyRootFilesystem: false
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi

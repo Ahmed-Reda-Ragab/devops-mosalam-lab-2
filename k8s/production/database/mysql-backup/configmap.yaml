@@ -1,0 +1,99 @@
+# ============================================================================
+#  Backup script — ported from backup-mysql/backup.sh + cleanup.sh.
+#
+#  The Compose service was a long-running alpine container with dcron inside it
+#  (backup-mysql/Dockerfile + crontab + entrypoint.sh). Kubernetes has a
+#  first-class scheduler for this, so all of that collapses into a CronJob:
+#    * no custom image to build/push/patch (stock mysql:8.0 now)
+#    * no dcron, no entrypoint wrapper
+#    * failures become Job failures — visible in `kubectl get jobs` and
+#      alertable — instead of a line in a log file nobody reads
+#
+#  cleanup.sh is folded into the same script rather than being a second
+#  CronJob: two CronJobs sharing one ReadWriteOnce PVC would have to land on
+#  the same node, which the scheduler does not guarantee.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-backup-script
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-backup
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of: task-manager
+data:
+  backup.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    ##########################################################################
+    # Config
+    ##########################################################################
+    MYSQL_HOST="${MYSQL_HOST:-mysql-primary.tasks-db.svc.cluster.local}"
+    MYSQL_PORT="${MYSQL_PORT:-3306}"
+    MYSQL_USER="${MYSQL_USER:-root}"
+    MYSQL_PASSWORD="$(cat /run/secrets/mysql_root_password)"
+
+    BACKUP_ROOT=/backup/backups
+    RETENTION_DAYS="${RETENTION_DAYS:-30}"
+
+    TODAY=$(date +%F)
+    BACKUP_DIR="$BACKUP_ROOT/$TODAY"
+    mkdir -p "$BACKUP_DIR"
+
+    echo "=================================="
+    echo "Backup Started : $(date)"
+    echo "Source         : $MYSQL_HOST:$MYSQL_PORT"
+    echo "=================================="
+
+    ##########################################################################
+    # Get databases (skip the server's own system schemas)
+    ##########################################################################
+    DATABASES=$(mysql \
+      -h"$MYSQL_HOST" \
+      -P"$MYSQL_PORT" \
+      -u"$MYSQL_USER" \
+      -p"$MYSQL_PASSWORD" \
+      --ssl-mode=DISABLED \
+      -N \
+      -e "SHOW DATABASES;" \
+      | grep -Ev "(information_schema|performance_schema|mysql|sys)")
+
+    ##########################################################################
+    # Dump each database
+    ##########################################################################
+    for DB in $DATABASES; do
+      echo ""
+      echo "Backing up : $DB"
+
+      mysqldump \
+        -h"$MYSQL_HOST" \
+        -P"$MYSQL_PORT" \
+        -u"$MYSQL_USER" \
+        -p"$MYSQL_PASSWORD" \
+        --ssl-mode=DISABLED \
+        --single-transaction \
+        --quick \
+        --routines \
+        --events \
+        --triggers \
+        "$DB" \
+        | gzip > "$BACKUP_DIR/$DB.sql.gz"
+
+      sha256sum "$BACKUP_DIR/$DB.sql.gz" >> "$BACKUP_DIR/SHA256SUMS"
+      echo "Done : $DB"
+    done
+
+    ##########################################################################
+    # Retention — was cleanup.sh, keeps the newest $RETENTION_DAYS directories
+    ##########################################################################
+    echo ""
+    echo "Pruning backups older than the newest ${RETENTION_DAYS} sets..."
+    ls -1dt "$BACKUP_ROOT"/*/ 2>/dev/null | tail -n +$((RETENTION_DAYS + 1)) | while read -r OLD; do
+      echo "Deleting $OLD"
+      rm -rf "$OLD"
+    done
+
+    echo ""
+    echo "Finished : $(date)"

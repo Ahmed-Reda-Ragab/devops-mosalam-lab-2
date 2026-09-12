@@ -1,0 +1,49 @@
+# ============================================================================
+#  Compose: traefik.http.routers.locust.rule=Host(`load.el-programmer.click`)
+#
+#  ⚠️  Same exposure problem as Adminer: this UI can start a load test against
+#  your production API, from the public internet, with no authentication. The
+#  Compose stack had the same hole. Either add basic auth (uncomment below,
+#  after creating the Secret) or drop this Ingress and use
+#     kubectl -n tasks-app port-forward svc/locust 8089:8089
+#
+#    htpasswd -nbB locust 'STRONG_PASSWORD' > auth
+#    kubectl -n tasks-app create secret generic locust-basic-auth --from-file=auth
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: locust
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: locust
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Locust's web UI streams stats over a long-lived connection; the default
+    # 60s proxy read timeout would cut it every minute.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+
+    # --- basic auth — uncomment together with the Secret above --------------
+    # nginx.ingress.kubernetes.io/auth-type: basic
+    # nginx.ingress.kubernetes.io/auth-secret: locust-basic-auth
+    # nginx.ingress.kubernetes.io/auth-secret-type: auth-file
+    # nginx.ingress.kubernetes.io/auth-realm: "Locust — authentication required"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - load.el-programmer.click
+      secretName: el-programmer-tls
+  rules:
+    - host: load.el-programmer.click
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: locust
+                port:
+                  name: web

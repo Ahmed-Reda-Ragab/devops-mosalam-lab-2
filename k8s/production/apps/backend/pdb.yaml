@@ -1,0 +1,24 @@
+# ============================================================================
+#  PodDisruptionBudget — has no Compose equivalent at all.
+#
+#  It bounds VOLUNTARY disruption: node drains, cluster upgrades, `kubectl
+#  drain`, the cluster-autoscaler compacting nodes. Without it, draining a node
+#  that happens to hold all three backend pods evicts them simultaneously and
+#  the API goes dark for the length of a pod start.
+#
+#  maxUnavailable: 1 pairs with the HPA: minAvailable would need updating every
+#  time the replica count changed, this does not.
+# ============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: task-manager
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend

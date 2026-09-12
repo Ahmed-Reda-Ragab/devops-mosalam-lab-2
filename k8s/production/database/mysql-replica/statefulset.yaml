@@ -1,0 +1,134 @@
+# ============================================================================
+#  MySQL Replica (read-only) — Compose service "mysql-replica".
+#
+#  The Compose file used `depends_on: mysql-primary: service_healthy`. There is
+#  no cross-pod ordering in Kubernetes, so the equivalent lives in two places:
+#    1) the wait loop inside 10-start-replica.sh (blocks until the primary's
+#       replication account answers), and
+#    2) the Argo CD sync-wave on the parent Application, which brings the
+#       database up before the apps.
+#  The replica can therefore start first and simply wait — no crash-loop.
+# ============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-replica
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-replica
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: task-manager
+spec:
+  serviceName: mysql-replica
+  # server-id is hardcoded to 2. Adding a second replica requires generating
+  # server-id per ordinal — see the note in the primary's ConfigMap.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mysql-replica
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mysql-replica
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: task-manager
+    spec:
+      securityContext:
+        fsGroup: 999
+      terminationGracePeriodSeconds: 60
+      # Keep the replica off the primary's node so one node failure cannot take
+      # both copies of the data with it. "preferred" (not "required") so a
+      # single-node dev cluster still schedules.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: mysql-primary
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          args:
+            - --defaults-file=/etc/mysql/my.cnf
+          env:
+            - name: MYSQL_ROOT_PASSWORD_FILE
+              value: /run/secrets/mysql_root_password
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: cnf
+              mountPath: /etc/mysql/my.cnf
+              subPath: my.cnf
+              readOnly: true
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+          # Longer than the primary's: the init script blocks in its wait loop
+          # until the primary is fully up. 60 x 10s = 10 minutes before the
+          # liveness probe is armed.
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$(cat /run/secrets/mysql_root_password)" --silent
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$(cat /run/secrets/mysql_root_password)" --silent
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$(cat /run/secrets/mysql_root_password)" --silent
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: cnf
+          configMap:
+            name: mysql-replica-cnf
+            defaultMode: 0644
+        - name: init
+          configMap:
+            name: mysql-replica-init
+            defaultMode: 0755
+        - name: secrets
+          secret:
+            secretName: mysql-secrets
+            defaultMode: 0400
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: gp3
+        resources:
+          requests:
+            storage: 10Gi

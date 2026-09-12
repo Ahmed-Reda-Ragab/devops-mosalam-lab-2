@@ -1,0 +1,81 @@
+# ============================================================================
+#  NetworkPolicies for tasks-app — the equivalent of Compose's
+#  `private-network: internal: true`, where only Traefik could reach the
+#  backend and frontend.
+#
+#  Read the header of k8s/production/database/networkpolicy.yaml first: the
+#  same CNI caveat applies (a CNI that does not enforce policies accepts these
+#  objects and quietly ignores them).
+# ============================================================================
+
+# --- 1. Default deny ---------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# --- 2. Backend: the ingress controller, Locust, and Prometheus ---------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-allow
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Public traffic, via /api and /pro-api.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        # Load tests hit the Service directly, bypassing the ingress.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: locust
+        # Prometheus scrapes /metrics on the same port.
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# --- 3. Frontend and Locust: ingress controller only -------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-allow-ingress-controller
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [frontend, locust]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 8089

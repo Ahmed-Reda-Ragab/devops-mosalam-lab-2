@@ -1,0 +1,83 @@
+# ============================================================================
+#  Locust — Compose service "locust".
+#
+#  --host points at the backend SERVICE, not through the Ingress. Two reasons,
+#  both inherited from the Compose setup:
+#    * the Service load-balances across all backend pods, so a load test
+#      actually exercises the replica set rather than one pod;
+#    * it bypasses the API-key gate on /api (that gate lives on the Ingress),
+#      so the scenario needs no credentials.
+#  To load-test the FULL path including TLS, ingress and rate limiting, change
+#  it to https://el-programmer.click and add an X-API-KEY header in the
+#  locustfile — you will be measuring a different thing, on purpose.
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: locust
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: locust
+    app.kubernetes.io/component: load-test
+    app.kubernetes.io/part-of: task-manager
+spec:
+  # Single-process mode, same as Compose. To generate real load, switch to
+  # master/worker: one Deployment with `--master` and another with
+  # `--worker --master-host=locust`, scaled to N.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: locust
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: locust
+        app.kubernetes.io/component: load-test
+        app.kubernetes.io/part-of: task-manager
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: locust
+          image: locustio/locust:2.31.1
+          args:
+            - -f
+            - /mnt/locust/locustfile.py
+            - --host=http://backend.tasks-app.svc.cluster.local:8000
+          ports:
+            - name: web
+              containerPort: 8089
+              protocol: TCP
+          volumeMounts:
+            - name: scenario
+              mountPath: /mnt/locust
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: web
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: web
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: scenario
+          configMap:
+            name: locust-scenario

@@ -1,0 +1,61 @@
+# ============================================================================
+#  Horizontal Pod Autoscaler — the thing SCALING.md describes doing by hand
+#  with `docker compose up --scale backend=N`, now automatic.
+#
+#  REQUIRES metrics-server in the cluster (EKS: install it; GKE/AKS: on by
+#  default). Without it the HPA reports "unknown" for the CPU metric and never
+#  scales — check with:  kubectl -n tasks-app describe hpa backend
+#
+#  Why CPU 70%: the backend is I/O bound (MySQL + memcached), so it saturates
+#  on latency long before CPU. 70% of a 250m request means ~175m sustained,
+#  which in practice lines up with the p95 latency starting to climb. Watch the
+#  BackendHighLatencyP95 alert and tune from there rather than from theory.
+# ============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: task-manager
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      # React fast to a Locust run or a real traffic spike.
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100          # at most double
+          periodSeconds: 30
+        - type: Pods
+          value: 4
+          periodSeconds: 30
+      selectPolicy: Max
+    scaleDown:
+      # Come down slowly — MySQL connection pools are expensive to rebuild, and
+      # flapping replicas make the RED dashboards unreadable.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60

@@ -1,0 +1,30 @@
+# ============================================================================
+#  Backup storage — Compose named volumes mysql_backup + mysql_backup_logs.
+#  One PVC now: the CronJob writes dumps under /backup/backups and its stdout
+#  goes to the pod log (collected by Promtail -> Loki), so a separate log volume
+#  buys nothing here.
+#
+#  ⚠️  ReadWriteOnce means this PVC can only be mounted by pods on ONE node at a
+#  time. That is fine for a CronJob with concurrencyPolicy: Forbid, but it means
+#  you cannot run a restore pod at the same time as a backup. If you need that,
+#  switch to a ReadWriteMany class (EFS on EKS, Filestore on GKE, Azure Files).
+#
+#  For anything beyond a lab, dumps should go OFF-cluster: add `aws s3 sync`
+#  (or gsutil/az) at the end of the backup script. A PVC in the same cluster
+#  does not survive the failure modes a backup exists to protect against.
+# ============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-backup
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-backup
+    app.kubernetes.io/component: backup
+    app.kubernetes.io/part-of: task-manager
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # storageClassName: gp3
+  resources:
+    requests:
+      storage: 20Gi

@@ -1,0 +1,33 @@
+# ============================================================================
+#  Headless Service — the governing Service of the StatefulSet.
+#
+#  In Compose, "mysql-primary" was a Docker DNS name resolving to the container.
+#  Here the same name resolves to the pod IP:
+#      mysql-primary.tasks-db.svc.cluster.local
+#  which is exactly what proxysql/init.sql and the replica's init script expect,
+#  so neither had to be rewritten beyond the namespace suffix.
+#
+#  publishNotReadyAddresses: the replica's init script polls the primary in an
+#  `until` loop while the primary is still initialising. Without this, DNS would
+#  return NXDOMAIN and each poll would fail on resolution rather than on the
+#  connection — same end result, but far more confusing in the logs.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-primary
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-primary
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: task-manager
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: mysql-primary
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+      protocol: TCP

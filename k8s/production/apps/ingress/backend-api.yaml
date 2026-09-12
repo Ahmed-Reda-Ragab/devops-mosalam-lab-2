@@ -1,0 +1,95 @@
+# ============================================================================
+#  /api — the guarded API route. This is the direct translation of the Traefik
+#  middleware chain:
+#     api-ratelimit@file, api-key@file, cors@file, body-limit@file,
+#     compression@file, security-headers@file
+#
+#  Traefik middleware        ->  ingress-nginx equivalent
+#  --------------------------------------------------------------------------
+#  api-ratelimit            ->  limit-rps + limit-burst-multiplier (below)
+#  api-key (Yaegi plugin)   ->  configuration-snippet (below) — see the warning
+#  cors                     ->  enable-cors + cors-allow-methods (below)
+#  body-limit               ->  proxy-body-size + client-body-buffer-size
+#  compression              ->  use-gzip in the controller ConfigMap (global)
+#  security-headers         ->  add-headers -> ingress-nginx/custom-headers
+#                               (global; see platform/ingress-nginx-custom-headers.yaml)
+#
+#  ⚠️  TWO THINGS TO KNOW BEFORE THIS IS SAFE
+#
+#  1) `configuration-snippet` IS IGNORED unless the controller runs with
+#     allow-snippet-annotations: "true" (it defaults to FALSE since
+#     ingress-nginx v1.9). If you forget, /api silently becomes PUBLIC — the
+#     Ingress still works, the gate just is not there. Verify after deploying:
+#        curl -k -o /dev/null -w '%{http_code}\n' https://el-programmer.click/api/tasks
+#     must print 403, not 200.
+#
+#  2) THE KEY IS IN PLAINTEXT IN GIT. This is not a regression — the Traefik
+#     plugin had no secret support either, so the same key is already committed
+#     at traefik/dynamic/api-key.yml — but it is still wrong, and Argo CD makes
+#     it worse by putting it in every clone of the repo. Two real fixes:
+#       a) move the check into the app: read an API_KEY env var from the
+#          backend-secrets Secret and reject in a FastAPI dependency. Best
+#          option; the key never leaves the cluster.
+#       b) run a tiny auth service and use
+#          nginx.ingress.kubernetes.io/auth-url instead of the snippet.
+#     Until then, treat this key as public and rotate it after the migration.
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend-api
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+    # --- api-ratelimit@file: average 10 r/s, burst 20 ---------------------
+    # burst = limit-rps * limit-burst-multiplier = 10 * 2 = 20.
+    # Counted per client IP, which is why the controller Service is set to
+    # externalTrafficPolicy: Local — otherwise every request would appear to
+    # come from a node IP and the whole cluster would share one bucket.
+    nginx.ingress.kubernetes.io/limit-rps: "10"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "2"
+
+    # --- body-limit@file: maxRequestBodyBytes 10MB / mem 2MB --------------
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/client-body-buffer-size: "2m"
+
+    # --- cors@file --------------------------------------------------------
+    # NOTE: Traefik's middleware only set accessControlAllowMethods and left
+    # the origin unset. ingress-nginx defaults cors-allow-origin to "*", so it
+    # is pinned to the real origin here — otherwise this would be MORE
+    # permissive than the Compose stack, not less.
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization,X-API-KEY"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://el-programmer.click"
+
+    # --- api-key@file -----------------------------------------------------
+    # Reject anything without the key (403, same status the Traefik plugin
+    # returned), then strip the header so it never reaches the app —
+    # the equivalent of removeHeadersOnSuccess: true.
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      if ($http_x_api_key != "asxijomckasmksmlcmslcwefpwokww3309kml") {
+        return 403;
+      }
+      proxy_set_header X-API-KEY "";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - el-programmer.click
+      secretName: el-programmer-tls
+  rules:
+    - host: el-programmer.click
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  name: http

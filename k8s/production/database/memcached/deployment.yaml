@@ -1,0 +1,84 @@
+# ============================================================================
+#  Memcached — the application cache. Compose service "memcached".
+#
+#  ⚠️  replicas STAYS AT 1 on purpose.
+#  Memcached has no clustering: consistency across nodes is the CLIENT's job
+#  (consistent hashing over a list of servers). Putting N memcached pods behind
+#  one ClusterIP would round-robin every request to a random node, so a key
+#  written to pod A would miss on pod B — a cache that silently degrades to
+#  ~1/N hit rate rather than failing loudly.
+#
+#  To actually scale it: run it as a StatefulSet with a headless Service and
+#  give the backend the full server list (CACHE_HOST becomes a comma-separated
+#  list of pod FQDNs) so the client can shard. That is an application change,
+#  so it is out of scope for this conversion.
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memcached
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: memcached
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: task-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: memcached
+  strategy:
+    # Never two memcached pods at once — see the note above.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: memcached
+        app.kubernetes.io/component: cache
+        app.kubernetes.io/part-of: task-manager
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 11211
+        runAsGroup: 11211
+      containers:
+        - name: memcached
+          image: memcached:1.6-alpine
+          args:
+            - memcached
+            - -m
+            - "256"      # 256 MiB of cache
+            - -c
+            - "1024"     # max concurrent connections
+            - -t
+            - "2"        # worker threads
+          ports:
+            - name: memcached
+              containerPort: 11211
+              protocol: TCP
+          # Compose used `echo stats | nc localhost 11211 | grep STAT`. A plain
+          # TCP check is equivalent here and needs no shell in the image.
+          readinessProbe:
+            tcpSocket:
+              port: memcached
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: memcached
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              # -m 256 is the cache budget; the process needs headroom on top,
+              # hence a 512Mi limit (same as Compose's mem_limit).
+              memory: 320Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

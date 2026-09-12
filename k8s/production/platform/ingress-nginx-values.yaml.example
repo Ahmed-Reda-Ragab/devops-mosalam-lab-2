@@ -1,0 +1,96 @@
+# ============================================================================
+#  Helm values for ingress-nginx — the replacement for the Traefik service in
+#  compose/docker-compose.apps.yml.
+#
+#  This file is NOT applied by Argo CD (the `.example` suffix keeps it out of
+#  the directory sync). Install the controller with it once:
+#
+#    helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+#    helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+#      --namespace ingress-nginx --create-namespace \
+#      -f k8s/production/platform/ingress-nginx-values.yaml.example
+#
+#  ...or turn it into its own Argo CD Application with a Helm source (see
+#  k8s/README.md, section "Cluster prerequisites").
+#
+#  Traefik static flag                     ->  value below
+#  --------------------------------------------------------------------------
+#  --entrypoints.web.address=:80           ->  service listens on 80
+#  --entrypoints.websecure.address=:443    ->  service listens on 443
+#  --entrypoints.web...redirections=https  ->  ssl-redirect: "true" (default)
+#  --metrics.prometheus=true               ->  controller.metrics.enabled
+#  --tracing.otlp=true                     ->  enable-opentelemetry (see below)
+#  tls.options.default (minVersion, ciphers) -> ssl-protocols / ssl-ciphers
+# ============================================================================
+controller:
+  # Two replicas so a node roll does not take the whole site down. Traefik was
+  # a single container; this is the one place where k8s is strictly better.
+  replicaCount: 2
+
+  service:
+    type: LoadBalancer
+    # Keeps the real client IP in X-Forwarded-For / access logs, which the
+    # rate-limit annotation on the backend Ingress needs to be meaningful.
+    externalTrafficPolicy: Local
+    annotations:
+      # --- AWS (EKS) — Network Load Balancer -------------------------------
+      service.beta.kubernetes.io/aws-load-balancer-type: "external"
+      service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+      service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+      # --- GKE: nothing needed, a regional TCP LB is created automatically.
+      # --- AKS: service.beta.kubernetes.io/azure-load-balancer-health-probe-request-path: /healthz
+
+  config:
+    # ---- REQUIRED by the backend Ingress ----------------------------------
+    # The API-key gate uses `nginx.ingress.kubernetes.io/configuration-snippet`.
+    # Snippet annotations are DISABLED by default since ingress-nginx v1.9, so
+    # without this the annotation is silently ignored and /api becomes OPEN.
+    allow-snippet-annotations: "true"
+    # Only Ingresses in these namespaces may use snippets — keeps the blast
+    # radius of that flag small.
+    annotations-risk-level: "Critical"
+
+    # ---- Security response headers (see ingress-nginx-custom-headers.yaml) --
+    add-headers: "ingress-nginx/custom-headers"
+    server-tokens: "false"          # Traefik's  customResponseHeaders.Server: ""
+
+    # ---- TLS hardening — traefik/dynamic/tls.yml ---------------------------
+    ssl-protocols: "TLSv1.2 TLSv1.3"
+    ssl-ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305"
+    ssl-ecdh-curve: "X25519:prime256v1"
+
+    # ---- HSTS (Traefik: forceSTSHeader / stsSeconds / stsIncludeSubdomains) -
+    hsts: "true"
+    hsts-max-age: "31536000"
+    hsts-include-subdomains: "true"
+
+    # ---- compression@file --------------------------------------------------
+    use-gzip: "true"
+
+    # ---- Access logs, JSON, like --accesslog.format=json -------------------
+    log-format-escape-json: "true"
+    log-format-upstream: '{"time":"$time_iso8601","remote_addr":"$remote_addr","request":"$request","status":$status,"bytes":$body_bytes_sent,"upstream":"$proxy_upstream_name","upstream_status":"$upstream_status","request_time":$request_time,"trace_id":"$opentelemetry_trace_id"}'
+
+    # ---- Tracing: the edge opens the root span, exactly like Traefik did ----
+    # Without this the FastAPI span becomes the trace root and you lose the
+    # TLS-termination + proxy hop from the waterfall.
+    enable-opentelemetry: "true"
+    otlp-collector-host: "otel-collector.monitoring.svc.cluster.local"
+    otlp-collector-port: "4317"
+    otlp-service-name: "ingress-nginx"
+    # Keep in sync with the backend's OTEL_TRACES_SAMPLER_ARG (1.0 = 100%).
+    otel-sampler-ratio: "1.0"
+
+  metrics:
+    enabled: true          # exposes :10254/metrics — scraped by Prometheus
+    service:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "10254"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi

@@ -1,0 +1,62 @@
+# ============================================================================
+#  Adminer — web DB UI. Compose service "adminer".
+#  Lives in tasks-db so it can reach ProxySQL / MySQL directly; it is published
+#  through ingress-nginx on adminer.el-programmer.click.
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adminer
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: adminer
+    app.kubernetes.io/component: db-ui
+    app.kubernetes.io/part-of: task-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: adminer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: adminer
+        app.kubernetes.io/component: db-ui
+        app.kubernetes.io/part-of: task-manager
+    spec:
+      containers:
+        - name: adminer
+          image: adminer:4.8.1
+          env:
+            # Pre-fills the server field so you do not have to remember the
+            # FQDN. Point it at ProxySQL to exercise the R/W split, or at
+            # mysql-primary.tasks-db.svc.cluster.local:3306 to bypass it.
+            - name: ADMINER_DEFAULT_SERVER
+              value: proxysql.tasks-db.svc.cluster.local:6033
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi

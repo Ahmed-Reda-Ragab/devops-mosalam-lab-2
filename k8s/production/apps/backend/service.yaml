@@ -1,0 +1,22 @@
+# ============================================================================
+#  Compose: `expose: 8000` on private-network, with Traefik routing to it.
+#  Kubernetes: a ClusterIP Service. The Ingresses in ../ingress/ point here.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: task-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

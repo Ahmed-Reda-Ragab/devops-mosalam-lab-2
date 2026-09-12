@@ -1,0 +1,44 @@
+# ============================================================================
+#  Compose labels:
+#    traefik.http.routers.frontend.rule=PathPrefix(`/`)
+#    traefik.http.routers.frontend.priority=1
+#
+#  There is no `priority` in the Ingress API and none is needed: ingress-nginx
+#  matches the LONGEST prefix, so "/api" and "/pro-api" (defined in the sibling
+#  files) always win over "/" without any tie-breaking.
+#
+#  ⚠️  Three separate Ingress objects share this hostname on purpose. Annotations
+#  in ingress-nginx apply per INGRESS, not per path — so the API-key gate and
+#  rate limit could not be scoped to /api if all three paths lived in one
+#  object. This is the standard way to express Traefik's per-router middleware
+#  chains in ingress-nginx.
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    # Traefik did this globally with
+    #   --entrypoints.web.http.redirections.entrypoint.to=websecure
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - el-programmer.click
+      secretName: el-programmer-tls
+  rules:
+    - host: el-programmer.click
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  name: http

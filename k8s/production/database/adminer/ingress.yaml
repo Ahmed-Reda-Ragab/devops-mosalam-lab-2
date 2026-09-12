@@ -1,0 +1,78 @@
+# ============================================================================
+#  Compose labels:
+#    traefik.http.routers.adminer.rule=Host(`adminer.el-programmer.click`)
+#    traefik.http.routers.adminer.tls.certresolver=le
+#  ->  an Ingress + a cert-manager Certificate.
+#
+#  The Certificate is a standalone object rather than the usual
+#  `cert-manager.io/cluster-issuer` annotation on the Ingress. Reason: several
+#  Ingresses across three namespaces share these hostnames, and the annotation
+#  would make cert-manager mint one Certificate per Ingress — burning through
+#  Let's Encrypt's "5 duplicate certificates per week" limit. One explicit
+#  Certificate per namespace, referenced by secretName, keeps it to one order.
+#
+#  ⚠️  SECURITY — READ THIS.
+#  Adminer is a full database client on the public internet with NO auth in
+#  front of it (this matches the Compose setup, which had none either). Anyone
+#  who guesses a DB password owns the data. Two ways to fix it, pick one:
+#
+#   a) HTTP basic auth at the ingress:
+#        htpasswd -nbB admin 'STRONG_PASSWORD' > auth
+#        kubectl -n tasks-db create secret generic adminer-basic-auth --from-file=auth
+#      then uncomment the four `auth-*` annotations below.
+#
+#   b) Do not expose it at all — delete this file and reach it on demand with
+#        kubectl -n tasks-db port-forward svc/adminer 8083:8080
+#      This is what I would do; the UI is a debugging tool, not a service.
+# ============================================================================
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: adminer-tls
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  secretName: adminer-tls
+  # Switch to letsencrypt-prod once a staging issuance has succeeded.
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  dnsNames:
+    - adminer.el-programmer.click
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: adminer
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: adminer
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    # --- (a) basic auth — uncomment together with the Secret above ----------
+    # nginx.ingress.kubernetes.io/auth-type: basic
+    # nginx.ingress.kubernetes.io/auth-secret: adminer-basic-auth
+    # nginx.ingress.kubernetes.io/auth-secret-type: auth-file
+    # nginx.ingress.kubernetes.io/auth-realm: "Adminer — authentication required"
+
+    # Traefik redirected :80 -> :443 globally; ingress-nginx does the same
+    # per-Ingress, and it defaults to true. Spelled out for clarity.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - adminer.el-programmer.click
+      secretName: adminer-tls
+  rules:
+    - host: adminer.el-programmer.click
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: adminer
+                port:
+                  name: http

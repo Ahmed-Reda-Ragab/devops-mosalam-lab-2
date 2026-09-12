@@ -1,0 +1,47 @@
+# ============================================================================
+#  my.cnf for the replica — verbatim from mysql/replica/my.cnf, plus the same
+#  innodb_buffer_pool_size pin as the primary (see that file for the reason).
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-replica-cnf
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-replica
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: task-manager
+data:
+  my.cnf: |
+    [mysqld]
+    # ---- Server identity (must differ from the primary) ----
+    server-id                = 2
+    bind-address             = 0.0.0.0
+
+    # ---- Relay / binary logging + GTID ----
+    relay_log                = relay-bin
+    log_bin                  = mysql-bin
+    gtid_mode                = ON
+    enforce_gtid_consistency = ON
+    log_slave_updates        = ON
+
+    # ---- Read-only replica ----
+    # read_only blocks writes from regular users (root & the replication threads
+    # bypass it, which is exactly what we want). This is also the flag ProxySQL's
+    # monitor reads to move this server into the reader hostgroup (20).
+    read_only                = ON
+    # NOTE: super_read_only is intentionally NOT set here. If it were, MySQL's
+    # very first initialization (creating root / system users) would fail with
+    # "--super-read-only option so it cannot execute this statement". The init
+    # script enables it at runtime via `SET PERSIST super_read_only=ON`, which
+    # persists across restarts.
+
+    # ---- Memory ----
+    innodb_buffer_pool_size  = 256M
+
+    # ---- Misc ----
+    skip-name-resolve
+    socket                   = /var/lib/mysql/mysql.sock
+
+    [client]
+    socket                   = /var/lib/mysql/mysql.sock

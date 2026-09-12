@@ -1,0 +1,165 @@
+# ============================================================================
+#  NetworkPolicies — the replacement for Compose's network segmentation.
+#
+#  Compose relied on which containers were attached to which Docker network
+#  (db-network / private-network, the latter `internal: true`). Kubernetes is
+#  flat by default: EVERY pod can reach every other pod. NetworkPolicies are
+#  what restore the isolation, and without them this conversion would be a
+#  security downgrade from the Compose stack.
+#
+#  ⚠️  REQUIRES A CNI THAT ENFORCES THEM. Calico, Cilium, AWS VPC CNI (with
+#  ENABLE_NETWORK_POLICY=true) and Azure NPM all do. GKE needs Dataplane V2 or
+#  --enable-network-policy. On a CNI that ignores policies these objects apply
+#  cleanly and silently do nothing — verify with a test pod, do not assume.
+#
+#  Only INGRESS is restricted here. Egress is left open on purpose: locking it
+#  down also blocks DNS, the OTLP push to the monitoring namespace and the
+#  ACME/Let's Encrypt traffic, and getting that wrong fails in ways that are
+#  genuinely hard to debug. Add egress rules later, one service at a time.
+# ============================================================================
+
+# --- 1. Default deny: nothing may enter a tasks-db pod unless allowed below --
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector: {}          # every pod in the namespace
+  policyTypes:
+    - Ingress
+---
+# --- 2. MySQL accepts connections only from ProxySQL, the backup Job and
+#        Adminer. Nothing in tasks-app can reach the database directly, which
+#        is the whole point of putting ProxySQL in front of it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mysql-allow-internal
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [mysql-primary, mysql-replica]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: proxysql
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mysql-backup
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: adminer
+        # The replica's IO thread connects to the primary.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mysql-replica
+      ports:
+        - protocol: TCP
+          port: 3306
+---
+# --- 3. ProxySQL is the one door into the data tier, open to the app namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxysql-allow-apps
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: proxysql
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: tasks-app
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: adminer
+      ports:
+        - protocol: TCP
+          port: 6033
+---
+# --- 4. Memcached: same story — reachable from the app namespace only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: memcached-allow-apps
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: memcached
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: tasks-app
+      ports:
+        - protocol: TCP
+          port: 11211
+---
+# --- 5. Adminer is reachable only through the ingress controller.
+#        Change the namespace label if your controller lives elsewhere.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: adminer-allow-ingress-controller
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: adminer
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# --- 6. Let Prometheus scrape anything in here that exposes metrics later
+#        (nothing does today; this saves a confusing debug session when you add
+#        mysqld-exporter or proxysql-exporter).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-scrape
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus

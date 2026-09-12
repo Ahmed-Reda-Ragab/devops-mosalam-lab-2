@@ -1,0 +1,155 @@
+# ============================================================================
+#  Backend (FastAPI) — Compose service "backend".
+#
+#  ⚠️  IMAGE: replace DOCKERHUB_USERNAME before the first sync.
+#      ./k8s/scripts/set-image-repo.sh <your-dockerhub-username>
+#  After that, CI rewrites the TAG on every push to main (see
+#  .github/workflows/ci.yml, job "bump-manifests") and Argo CD picks up the
+#  commit — that commit is the deploy.
+#
+#  Compose                        ->  Kubernetes
+#  --------------------------------------------------------------------------
+#  build: ../backend              ->  a pushed, tagged image (GitOps needs an
+#                                     immutable artifact, not a build context)
+#  env_file + environment         ->  ConfigMap backend-config
+#  secrets: [db_password]         ->  Secret projected at /run/secrets
+#  expose: 8000                   ->  Service backend:8000
+#  traefik.* labels               ->  Ingress objects in ../ingress/
+#  healthcheck (one, on /health)  ->  startup + readiness + liveness, split
+#  mem_limit / cpus               ->  resources.requests / limits
+#  restart: unless-stopped        ->  the Deployment controller (implicit)
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: task-manager
+spec:
+  # Compose ran one container. Three is the smallest number that survives a
+  # single-node drain without dropping to zero capacity. The HPA takes over
+  # from here — see hpa.yaml.
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0     # never dip below the current replica count
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: task-manager
+      annotations:
+        # Prometheus discovers pods by these annotations (see the
+        # kubernetes-pods scrape job in the Prometheus ConfigMap). This is what
+        # replaces the static `backend:8000` target: with 3+ replicas a static
+        # target would scrape one random pod and under-report everything.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        # The image already creates and switches to an unprivileged "appuser".
+        # Declaring it here means the kubelet REFUSES to start the pod if a
+        # future image change reintroduces root, instead of silently running as
+        # root.
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread replicas across nodes so one node failure cannot take the whole
+      # API down. ScheduleAnyway (not DoNotSchedule) so a small cluster still
+      # places every pod.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      containers:
+        - name: backend
+          image: docker.io/DOCKERHUB_USERNAME/task-manager-backend:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: backend-config
+          env:
+            # Surfaced in logs and traces so you can tell which pod served a
+            # request — the k8s answer to the frontend's "container id" badge.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "service.namespace=task-manager,deployment.environment=production"
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+            # readOnlyRootFilesystem is on below, so give the process a writable
+            # /tmp. Nothing in the app writes there today, but Python libraries
+            # reach for it often enough that its absence is a latent trap.
+            - name: tmp
+              mountPath: /tmp
+          # --- Probes -------------------------------------------------------
+          # Compose had ONE healthcheck, on /health, which opens a DB
+          # connection. Reusing that as a k8s liveness probe would be a
+          # self-inflicted outage: a 30-second database blip would make the
+          # kubelet kill EVERY backend pod, and the restarts would then hammer
+          # the recovering database. So:
+          #   readiness -> /health   (DB-dependent: pull the pod out of the
+          #                           Service while the DB is unreachable)
+          #   liveness  -> /metrics  (process-only: restart only if the ASGI
+          #                           server itself is wedged)
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: http
+            periodSeconds: 5
+            failureThreshold: 12      # up to 60s to boot
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      volumes:
+        - name: secrets
+          secret:
+            secretName: backend-secrets
+            defaultMode: 0400
+        - name: tmp
+          emptyDir: {}

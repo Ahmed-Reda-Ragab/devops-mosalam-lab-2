@@ -1,0 +1,231 @@
+# ============================================================================
+#  prometheus.yml — ported from prometheus/prometheus.yml.
+#
+#  THE BIG CHANGE: static_configs -> kubernetes_sd_configs.
+#  In Compose, `backend:8000` was a single container and a static target was
+#  correct. Here the backend runs 3-12 pods behind one Service; a static target
+#  pointed at the Service VIP would scrape ONE RANDOM POD per interval, so
+#  request counters would jump around and the RED dashboards would be fiction.
+#  Service discovery scrapes every pod individually, which is the only correct
+#  way to do this.
+#
+#  Job naming is preserved so the existing alert rules and dashboards keep
+#  working: the `job` label is relabeled from each pod's
+#  app.kubernetes.io/name label, so the backend pods still land in job="backend",
+#  Loki in job="loki", and so on.
+#
+#  DROPPED: the standalone cadvisor container.
+#  cAdvisor v0.49 was run with --docker_only=true and /var/lib/docker mounted.
+#  EKS, GKE and AKS nodes all run containerd, not Docker — that DaemonSet would
+#  come up healthy and report nothing at all. The kubelet already embeds
+#  cAdvisor and serves the identical container_* metric families (with proper
+#  pod/namespace/container labels) at /metrics/cadvisor, so it is scraped
+#  directly instead. See the `cadvisor` job below.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/part-of: task-manager
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s      # how often every target below is scraped
+      evaluation_interval: 15s  # how often the alerting rules are evaluated
+      external_labels:
+        cluster: production
+
+    # Tempo's metrics_generator remote-writes span metrics derived from traces
+    # that may arrive slightly late (a span is only counted once its trace is
+    # ingested). Without an out-of-order window Prometheus rejects those samples
+    # outright and the span-metrics/service-graph panels come out full of holes.
+    storage:
+      tsdb:
+        out_of_order_time_window: 30m
+
+    rule_files:
+      - /etc/prometheus/rules/*.yml
+
+    # Alertmanager runs behind a /alertmanager route-prefix, so the path_prefix
+    # must match or the POSTs would 404.
+    alerting:
+      alertmanagers:
+        - path_prefix: /alertmanager
+          static_configs:
+            - targets:
+                - alertmanager.monitoring.svc.cluster.local:9093
+
+    scrape_configs:
+      # ---------------------------------------------------------------------
+      #  Prometheus itself. Kept static — it is scraping its own process.
+      # ---------------------------------------------------------------------
+      - job_name: prometheus
+        metrics_path: /prometheus/metrics
+        static_configs:
+          - targets:
+              - localhost:9090
+
+      # ---------------------------------------------------------------------
+      #  Container metrics from the kubelet's built-in cAdvisor.
+      #  Replaces the cadvisor container; provides container_cpu_*,
+      #  container_memory_*, container_network_* for every pod on the node.
+      #
+      #  Scraped THROUGH the API server (/api/v1/nodes/<n>/proxy/...) rather
+      #  than by hitting node:10250 directly. Slightly more load on the API
+      #  server, but it works on EKS, GKE and AKS without touching a single
+      #  firewall rule — the direct path is blocked by default on GKE.
+      # ---------------------------------------------------------------------
+      - job_name: cadvisor
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics/cadvisor
+
+      # ---------------------------------------------------------------------
+      #  The kubelet's own metrics (pod counts, volume stats, runtime errors).
+      # ---------------------------------------------------------------------
+      - job_name: kubelet
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        kubernetes_sd_configs:
+          - role: node
+        relabel_configs:
+          - action: labelmap
+            regex: __meta_kubernetes_node_label_(.+)
+          - target_label: __address__
+            replacement: kubernetes.default.svc:443
+          - source_labels: [__meta_kubernetes_node_name]
+            regex: (.+)
+            target_label: __metrics_path__
+            replacement: /api/v1/nodes/${1}/proxy/metrics
+
+      # ---------------------------------------------------------------------
+      #  Annotation-driven pod discovery. This ONE job replaces the static
+      #  backend / node-exporter / loki / promtail / grafana / alertmanager /
+      #  tempo entries from the Compose config.
+      #
+      #  A pod opts in with:
+      #     prometheus.io/scrape: "true"
+      #     prometheus.io/port:   "8000"
+      #     prometheus.io/path:   "/metrics"     (optional, defaults to /metrics)
+      #
+      #  and its app.kubernetes.io/name label becomes the `job` label — which is
+      #  what keeps job="backend", job="loki", job="tempo" etc. identical to the
+      #  Compose setup, so alerts and dashboards did not have to be rewritten.
+      # ---------------------------------------------------------------------
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # Opt-in only.
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          # Never scrape a pod that is shutting down or evicted.
+          - source_labels: [__meta_kubernetes_pod_phase]
+            action: drop
+            regex: (Succeeded|Failed)
+          # prometheus.io/path -> metrics path
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # prometheus.io/port -> replace the port in __address__
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          # Keep the useful identity labels.
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+          # THE IMPORTANT ONE: preserve the Compose-era job names.
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: replace
+            target_label: job
+            regex: (.+)
+
+      # ---------------------------------------------------------------------
+      #  OpenTelemetry Collector — two ports, two meanings, so it cannot be
+      #  expressed with the single-port pod annotation above.
+      #    :8888 -> the collector's OWN health (otelcol_receiver_accepted_spans,
+      #             otelcol_exporter_send_failed_spans, queue size, ...)
+      #    :8889 -> OTLP metrics forwarded by apps, re-serialised as Prometheus.
+      # ---------------------------------------------------------------------
+      - job_name: otel-collector
+        static_configs:
+          - targets:
+              - otel-collector.monitoring.svc.cluster.local:8888
+
+      - job_name: otel-collector-apps
+        static_configs:
+          - targets:
+              - otel-collector.monitoring.svc.cluster.local:8889
+
+      # ---------------------------------------------------------------------
+      #  ingress-nginx — replaces the `traefik` job.
+      #  The controller exposes Prometheus metrics on :10254. Endpoint
+      #  discovery (not a static Service target) so every controller replica is
+      #  scraped: with 2 replicas a static target would show half the traffic.
+      # ---------------------------------------------------------------------
+      - job_name: ingress-nginx
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [ingress-nginx]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: keep
+            regex: ingress-nginx
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: "10254"
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - target_label: job
+            replacement: ingress-nginx
+
+      # ---------------------------------------------------------------------
+      #  Blackbox: external HTTPS + TLS-certificate probing.
+      #  Unchanged in shape, but the DNS story is different: Compose used a
+      #  network alias so el-programmer.click resolved to the Traefik container
+      #  INSIDE the docker network. There is no such alias here, so the probe
+      #  goes out to public DNS and comes back in through the LoadBalancer —
+      #  which actually makes it a more honest end-to-end check (it now also
+      #  covers DNS and the cloud LB, not just the proxy).
+      # ---------------------------------------------------------------------
+      - job_name: blackbox
+        metrics_path: /probe
+        params:
+          module: [https_2xx]
+        static_configs:
+          - targets:
+              - https://el-programmer.click
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target      # target URL -> ?target=<url>
+          - source_labels: [__param_target]
+            target_label: instance            # show the URL as the instance label
+          - target_label: __address__
+            replacement: blackbox-exporter.monitoring.svc.cluster.local:9115

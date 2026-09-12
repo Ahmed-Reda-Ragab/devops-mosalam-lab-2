@@ -1,0 +1,24 @@
+# ============================================================================
+#  Headless Service for the replica. ProxySQL registers "mysql-replica" as a
+#  backend server (see proxysql/configmap-init.yaml) and its monitor moves it
+#  into the reader hostgroup once it sees read_only=ON.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-replica
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-replica
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: task-manager
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: mysql-replica
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+      protocol: TCP

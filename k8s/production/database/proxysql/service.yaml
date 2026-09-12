@@ -1,0 +1,26 @@
+# ============================================================================
+#  The address the application uses. Compose: proxysql:6033 on db-network.
+#  Kubernetes: proxysql.tasks-db.svc.cluster.local:6033 (cross-namespace, so
+#  the backend's DB_HOST carries the full FQDN).
+#
+#  Port 6032 (admin) is deliberately absent — it is bound to loopback inside
+#  the pod and only the config-loader sidecar can reach it.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxysql
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: proxysql
+    app.kubernetes.io/component: database-proxy
+    app.kubernetes.io/part-of: task-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: proxysql
+  ports:
+    - name: mysql
+      port: 6033
+      targetPort: mysql
+      protocol: TCP

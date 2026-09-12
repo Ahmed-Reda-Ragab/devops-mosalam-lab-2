@@ -1,0 +1,47 @@
+# ============================================================================
+#  my.cnf for the primary — verbatim from mysql/primary/my.cnf, plus one
+#  addition (innodb_buffer_pool_size) explained below.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-primary-cnf
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-primary
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: task-manager
+data:
+  my.cnf: |
+    [mysqld]
+    # ---- Server identity ----
+    # Fixed at 1 because this StatefulSet has exactly one replica. If you ever
+    # scale it, generate server-id from the ordinal in an initContainer instead.
+    server-id                = 1
+    bind-address             = 0.0.0.0
+
+    # ---- Binary logging / GTID (required to act as a replication source) ----
+    log_bin                  = mysql-bin
+    binlog_format            = ROW
+    gtid_mode                = ON
+    enforce_gtid_consistency = ON
+    log_slave_updates        = ON
+
+    # ---- Durability (safe defaults for a primary) ----
+    sync_binlog                    = 1
+    innodb_flush_log_at_trx_commit = 1
+
+    # ---- Memory ----
+    # NOT in the Compose version. Docker's mem_limit and a k8s memory limit
+    # behave differently in practice: the kubelet OOM-kills the container the
+    # instant it crosses the limit, with no grace. Pinning the buffer pool keeps
+    # MySQL's RSS predictable well under the 1Gi limit set on the StatefulSet.
+    innodb_buffer_pool_size  = 256M
+
+    # ---- Misc ----
+    skip-name-resolve
+    # Fixed socket path so the init scripts and the probes are deterministic
+    socket                   = /var/lib/mysql/mysql.sock
+
+    [client]
+    socket                   = /var/lib/mysql/mysql.sock

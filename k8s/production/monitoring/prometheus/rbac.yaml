@@ -1,0 +1,62 @@
+# ============================================================================
+#  Prometheus RBAC — has no Compose equivalent.
+#
+#  In Compose, Prometheus found its targets by writing Docker service names in
+#  a static list. In Kubernetes pods are ephemeral, so it discovers them
+#  through the API server instead — and that requires read permission on the
+#  objects it discovers from.
+#
+#  What each permission is for:
+#    nodes, nodes/proxy   -> scraping the kubelet's built-in cAdvisor endpoint
+#                            (this is what replaces the cadvisor container)
+#    pods                 -> the annotation-driven `kubernetes-pods` job
+#    services, endpoints  -> the ingress-nginx controller job
+#    /metrics             -> the API server's own metrics endpoint
+# ============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: task-manager
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: task-manager
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/metrics
+      - nodes/proxy
+      - services
+      - endpoints
+      - pods
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics", "/metrics/cadvisor"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: task-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: monitoring

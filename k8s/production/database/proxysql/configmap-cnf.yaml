@@ -1,0 +1,42 @@
+# ============================================================================
+#  proxysql.cnf — ported from proxysql/proxysql.cnf with two hardening changes
+#  that Kubernetes makes free:
+#
+#  1) mysql_ifaces is now 127.0.0.1:6032 instead of 0.0.0.0:6032.
+#     The config loader is a SIDECAR, so it shares this pod's network namespace
+#     and reaches the admin interface over loopback. Nothing else on the cluster
+#     network can touch it — stronger than Compose, where the port was open on
+#     the container IP and merely not published to the host.
+#
+#  2) monitor_password is NOT in this file any more. It was the literal
+#     "monitor123"; the loader now pushes it in from the mysql-secrets Secret
+#     via the admin interface at boot.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxysql-cnf
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: proxysql
+    app.kubernetes.io/component: database-proxy
+    app.kubernetes.io/part-of: task-manager
+data:
+  proxysql.cnf: |
+    datadir="/var/lib/proxysql"
+
+    admin_variables=
+    {
+        # Loopback only — reachable exclusively by the config-loader sidecar.
+        admin_credentials="admin:admin"
+        mysql_ifaces="127.0.0.1:6032"
+    }
+
+    mysql_variables=
+    {
+        threads=4
+        max_connections=2048
+        interfaces="0.0.0.0:6033"
+        monitor_username="monitor"
+        # monitor_password is injected at runtime by the config loader.
+    }

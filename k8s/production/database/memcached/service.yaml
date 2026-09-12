@@ -1,0 +1,23 @@
+# ============================================================================
+#  Compose: memcached:11211 on db-network.
+#  Kubernetes: memcached.tasks-db.svc.cluster.local:11211 — the value of the
+#  backend's CACHE_HOST env var (see k8s/production/apps/backend/configmap.yaml).
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: memcached
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: memcached
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/part-of: task-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: memcached
+  ports:
+    - name: memcached
+      port: 11211
+      targetPort: memcached
+      protocol: TCP

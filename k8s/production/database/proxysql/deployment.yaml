@@ -1,0 +1,143 @@
+# ============================================================================
+#  ProxySQL — the single entrypoint the application connects to (R/W split).
+#  Compose service "proxysql".
+#
+#  Deployment, not StatefulSet: ProxySQL starts with --initial, which WIPES its
+#  internal DB and re-reads proxysql.cnf on every boot, and the sidecar re-applies
+#  init.sql right after. There is therefore no state worth persisting, so the
+#  Compose named volume "proxysql_data" becomes an emptyDir.
+#
+#  Compose                        ->  Kubernetes
+#  --------------------------------------------------------------------------
+#  build: ../proxysql (custom img) ->  stock proxysql image + mysql:8.0 sidecar
+#  entrypoint: /startup.sh         ->  main container runs proxysql; the sidecar
+#                                      does the admin-interface configuration
+#  depends_on: service_healthy x2  ->  the loader's wait loop + ProxySQL's own
+#                                      monitor, which retries backends forever
+#  ports 6033 / 127.0.0.1:6032     ->  Service exposes 6033 only; 6032 is bound
+#                                      to loopback inside the pod
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxysql
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: proxysql
+    app.kubernetes.io/component: database-proxy
+    app.kubernetes.io/part-of: task-manager
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: proxysql
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: proxysql
+        app.kubernetes.io/component: database-proxy
+        app.kubernetes.io/part-of: task-manager
+      annotations:
+        # Roll the pods automatically when the routing rules or the .cnf change.
+        # Argo CD updates the ConfigMap, but a running ProxySQL would keep the
+        # old rules — the loader only runs at pod start. Bump this value in the
+        # same commit as a config change (or switch to Argo's
+        # argocd.argoproj.io/sync-options: Replace=true on the ConfigMap).
+        checksum/config: "v1"
+    spec:
+      containers:
+        # --- main: ProxySQL itself -----------------------------------------
+        - name: proxysql
+          image: proxysql/proxysql:2.7.3
+          command:
+            - proxysql
+          args:
+            - --initial          # discard the on-disk DB, re-read proxysql.cnf
+            - -f                 # foreground
+            - -c
+            - /etc/proxysql.cnf
+          ports:
+            - name: mysql
+              containerPort: 6033
+              protocol: TCP
+          volumeMounts:
+            - name: cnf
+              mountPath: /etc/proxysql.cnf
+              subPath: proxysql.cnf
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/proxysql
+            - name: shared
+              mountPath: /shared
+          # Ready only once the sidecar has finished loading servers, rules and
+          # the application user — a ProxySQL with no mysql_users would reject
+          # every backend connection with "Access denied".
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/shared/ready"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            tcpSocket:
+              port: mysql
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+
+        # --- sidecar: the config loader (replaces the custom image) ---------
+        - name: config-loader
+          image: mysql:8.0
+          command: ["/bin/bash", "/etc/proxysql/load-config.sh"]
+          env:
+            - name: DB_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: db-config
+                  key: DB_USERNAME
+          volumeMounts:
+            - name: init
+              mountPath: /etc/proxysql
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+            - name: shared
+              mountPath: /shared
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: cnf
+          configMap:
+            name: proxysql-cnf
+            defaultMode: 0644
+        - name: init
+          configMap:
+            name: proxysql-init
+            defaultMode: 0755
+        - name: secrets
+          secret:
+            secretName: mysql-secrets
+            defaultMode: 0400
+        - name: data
+          emptyDir: {}
+        # Carries the single readiness sentinel from the sidecar to the main
+        # container's probe.
+        - name: shared
+          emptyDir: {}
