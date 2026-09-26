@@ -1,8 +1,6 @@
 # ============================================================================
 #  Backend (FastAPI) — Compose service "backend".
 #
-#  ⚠️  IMAGE: replace DOCKERHUB_USERNAME before the first sync.
-#      ./k8s/scripts/set-image-repo.sh <your-dockerhub-username>
 #  After that, CI rewrites the TAG on every push to main (see
 #  .github/workflows/ci.yml, job "bump-manifests") and Argo CD picks up the
 #  commit — that commit is the deploy.
@@ -77,7 +75,7 @@ spec:
               app.kubernetes.io/name: backend
       containers:
         - name: backend
-          image: docker.io/DOCKERHUB_USERNAME/task-manager-backend:latest
+          image: docker.io/elprogrammer1/task-manager-backend:latest
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
