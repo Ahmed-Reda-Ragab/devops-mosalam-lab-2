@@ -1,0 +1,54 @@
+# ============================================================================
+#  ONE certificate for the whole platform.
+#
+#  The Ingress iteration of this repo needed TWO certificates for
+#  el-programmer.click — one in tasks-app for the frontend and /api, one in
+#  monitoring for /grafana, /prometheus and /alertmanager — because an Ingress
+#  can only reference a TLS Secret in its own namespace and Secrets do not cross
+#  namespaces. Two certificates for one name also meant burning two of Let's
+#  Encrypt allowance of 5 duplicate certificates per week on every reissue.
+#
+#  A Gateway terminates TLS centrally, so the cert lives here once and routes
+#  from any labelled namespace ride on it. Every hostname the platform serves is
+#  a SAN below.
+#
+#  START WITH letsencrypt-staging. Flip to letsencrypt-prod only after
+#     kubectl -n gateway get certificate,challenge
+#  shows a successful issuance, then force a real one:
+#     kubectl -n gateway delete secret el-programmer-tls
+# ============================================================================
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: el-programmer-tls
+  namespace: gateway
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  # The Gateway listener reads this Secret. cert-manager creates it.
+  secretName: el-programmer-tls
+
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+
+  # Renew 30 days before the 90-day cert expires — the same window the
+  # SSLCertificateExpiringSoon alert watches, so a stuck renewal reaches Telegram
+  # long before it becomes an outage.
+  duration: 2160h    # 90d
+  renewBefore: 720h  # 30d
+
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+
+  dnsNames:
+    # apex — frontend, /api, /pro-api, /grafana, /prometheus, /alertmanager
+    - el-programmer.click
+    # subdomains
+    - load.el-programmer.click
+    - adminer.el-programmer.click
+    - grafana.el-programmer.click
+    - prometheus.el-programmer.click
+    - alertmanager.el-programmer.click

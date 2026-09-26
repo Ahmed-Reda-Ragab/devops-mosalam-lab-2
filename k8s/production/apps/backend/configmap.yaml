@@ -39,7 +39,18 @@ data:
   OTEL_SERVICE_VERSION: "1.0"
   DEPLOY_ENV: production
   # Sample 100% — fine at this traffic level. Lower it (0.1 = 10%) when trace
-  # volume starts costing more than it tells you; ingress-nginx's
-  # otel-sampler-ratio should be lowered to match, since the edge decides first
-  # and the backend honours that decision (ParentBased sampler).
+  # volume starts costing more than it tells you.
+  #
+  # ⚠️  THE BACKEND IS NOW THE TRACE ROOT. Traefik opened the root span and
+  # injected W3C traceparent headers, so one trace covered TLS termination +
+  # middlewares + the FastAPI handler + SQL. ingress-nginx could do the same
+  # (enable-opentelemetry). Cilium's Gateway API Envoy exposes no equivalent
+  # toggle, so the edge hop is no longer in the waterfall: the FastAPI span is
+  # the root, and this sampler decides alone rather than honouring an upstream
+  # decision.
+  #
+  # What that costs: you can no longer see proxy-side latency or TLS handshake
+  # time in a trace. Prometheus still has it via the Hubble HTTP flow metrics.
+  # To get it back you would need a CiliumEnvoyConfig adding a tracing filter,
+  # or Envoy Gateway, which has first-class OTel support.
   OTEL_TRACES_SAMPLER_ARG: "1.0"

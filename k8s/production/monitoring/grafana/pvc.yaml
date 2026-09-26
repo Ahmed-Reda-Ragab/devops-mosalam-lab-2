@@ -1,0 +1,22 @@
+# ============================================================================
+#  Compose named volume "grafana-data". Holds the SQLite database: users,
+#  API keys, folder permissions, starred dashboards, and any dashboard saved
+#  from the UI (allowUiUpdates is on). Provisioned dashboards and datasources
+#  are re-created from the ConfigMaps at every start, so losing this loses
+#  human-made state only — but that includes the admin password change.
+# ============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboards
+    app.kubernetes.io/part-of: task-manager
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # storageClassName: gp3
+  resources:
+    requests:
+      storage: 5Gi

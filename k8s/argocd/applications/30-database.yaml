@@ -1,0 +1,58 @@
+# ============================================================================
+#  Wave 1 — the data tier. Compose enforced this order with
+#  "bring up docker-compose.database.yml first"; here the sync wave does it.
+#
+#  Sync order inside the wave does not actually matter: the replica init script
+#  waits for the primary, and ProxySQL retries its backends forever. The wave
+#  exists so the apps (wave 1) do not start hammering a database that has not
+#  even been scheduled yet.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: task-manager-database
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: task-manager
+  source:
+    repoURL: https://github.com/Ahmed-Reda-Ragab/devops-mosalam-lab-2.git
+    targetRevision: main
+    path: k8s/production/database
+    directory:
+      recurse: true
+      # Keeps secrets.yaml.example out of the sync.
+      exclude: "*.example"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tasks-db
+  syncPolicy:
+    automated:
+      # prune: false for the data tier. An accidental file deletion should not
+      # be able to delete a StatefulSet; k8s would keep the PVCs, but the
+      # recovery is still a bad afternoon. Prune these by hand when you mean it.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+  ignoreDifferences:
+    # volumeClaimTemplates are immutable after creation and the API server
+    # normalises the storage quantity, so Argo reports a permanent diff on a
+    # field it could never reconcile anyway.
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+  revisionHistoryLimit: 5

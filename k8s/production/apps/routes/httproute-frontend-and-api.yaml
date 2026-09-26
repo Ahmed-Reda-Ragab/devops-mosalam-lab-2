@@ -1,0 +1,142 @@
+# ============================================================================
+#  The application routes for el-programmer.click.
+#
+#  ONE HTTPRoute replaces THREE Ingress objects. That is the single clearest
+#  argument for Gateway API in this repo: Ingress annotations apply to a
+#  whole Ingress, so /api (rate-limited, key-gated), /pro-api (deliberately
+#  neither, plus a rewrite) and / (a different backend) each needed their own
+#  object, their own duplicated tls block, and their own copy of the hostname.
+#  Here they are three RULES on one route, and filters live on the rule.
+#
+#  Rule ordering below is for humans only. Gateway API matches by SPECIFICITY,
+#  not file order: exact paths beat prefixes, and longer prefixes beat shorter
+#  ones. So /api and /pro-api win over / automatically — which is exactly what
+#  the Traefik priority=100 / priority=1 labels were hand-tuning, and what
+#  ingress-nginx got right by accident.
+#
+#  ── WHAT MOVED, AND WHAT COULD NOT ────────────────────────────────────────
+#  Traefik middleware      -> here
+#  ------------------------------------------------------------------------
+#  security-headers@file   -> ResponseHeaderModifier filter (below), per rule
+#  compression@file        -> Cilium/Envoy negotiates gzip on its own
+#  cors@file               -> DROPPED. It only set accessControlAllowMethods,
+#                             and the frontend and API are SAME-ORIGIN (both on
+#                             el-programmer.click), so no browser ever sent a
+#                             cross-origin preflight here. It was decorative.
+#                             If you later split the origins, add FastAPI's
+#                             CORSMiddleware — that is where it belongs.
+#  api-key@file            -> ciliumnetworkpolicy-api-key.yaml, enforced in the
+#                             datapath at L7. See that file; it is the weakest
+#                             part of this conversion and says so.
+#  api-ratelimit@file      -> ⚠️ NOT PORTED. Gateway API core has no rate-limit
+#                             filter and Cilium has no equivalent. Real options:
+#                               a) slowapi in the FastAPI app (per-route, and it
+#                                  can rate-limit per API key, not just per IP)
+#                               b) swap the Gateway to Envoy Gateway, whose
+#                                  BackendTrafficPolicy does global rate limiting
+#                             Until then /api is UNTHROTTLED. This is a genuine
+#                             capability loss, not an oversight.
+#  body-limit@file         -> ⚠️ NOT PORTED either, same reason. FastAPI should
+#                             bound request size itself.
+# ============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: task-manager
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  parentRefs:
+    - name: main
+      namespace: gateway
+      kind: Gateway
+      group: gateway.networking.k8s.io
+      sectionName: https
+  hostnames:
+    - el-programmer.click
+
+  rules:
+    # ---- /api — the guarded API route ------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              # Traefik: contentTypeNosniff / frameDeny / browserXssFilter /
+              # forceSTSHeader + stsSeconds + stsIncludeSubdomains.
+              X-Content-Type-Options: nosniff
+              X-Frame-Options: DENY
+              Referrer-Policy: strict-origin-when-cross-origin
+              Strict-Transport-Security: max-age=31536000; includeSubDomains
+            remove:
+              # Traefik did this with customResponseHeaders.Server: "" — an empty
+              # value. Gateway API can actually REMOVE a header, which is what
+              # was meant all along.
+              - Server
+      backendRefs:
+        - name: backend
+          port: 8000
+          kind: Service
+          group: ""
+
+    # ---- /pro-api — the same API, no gate, rewritten to /api -------------
+    # Traefik: replacepathregex ^/pro-api/(.*) -> /api/$1
+    # URLRewrite/ReplacePrefixMatch is a core filter, so no regex, no capture
+    # groups, and no chance of the off-by-one the Traefik regex had (it required
+    # a trailing slash, so a bare /pro-api fell through unrewritten and 404'd).
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /pro-api
+      filters:
+        - type: URLRewrite
+          urlRewrite:
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /api
+        # The Gateway supplies the credential for this route.
+        #
+        # Needed because the rewrite above makes /pro-api INDISTINGUISHABLE from
+        # /api by the time the request reaches the pod — and the api-key gate now
+        # lives in the pod's datapath (ciliumnetworkpolicy-api-key.yaml.optional),
+        # not at the edge. Without this, enabling that policy would break the
+        # "same API, no auth" demo route.
+        #
+        # Harmless while the policy is disabled: the app ignores the header.
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-API-KEY
+                value: asxijomckasmksmlcmslcwefpwokww3309kml
+      backendRefs:
+        - name: backend
+          port: 8000
+          kind: Service
+          group: ""
+
+    # ---- / — the static frontend ----------------------------------------
+    # Least specific, so it is the fallback. Traefik needed priority=1 to say
+    # this; Gateway API derives it.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              X-Content-Type-Options: nosniff
+              X-Frame-Options: DENY
+              Referrer-Policy: strict-origin-when-cross-origin
+              Strict-Transport-Security: max-age=31536000; includeSubDomains
+            remove:
+              - Server
+      backendRefs:
+        - name: frontend
+          port: 80
+          kind: Service
+          group: ""

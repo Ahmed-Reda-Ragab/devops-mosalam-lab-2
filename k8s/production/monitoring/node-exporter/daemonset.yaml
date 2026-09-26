@@ -56,10 +56,15 @@ spec:
             - --path.rootfs=/host/root
             - --web.listen-address=:9100
             # Compose excluded ^/(sys|proc|dev|host|etc). On Kubernetes nodes
-            # the same idea needs a few more paths, otherwise every container
-            # overlay and every projected Secret shows up as a "filesystem" and
+            # the same idea needs more paths, otherwise every container overlay
+            # and every projected Secret shows up as a "filesystem" and
             # HostDiskAlmostFull fires on things that are not disks.
-            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/k3s/containerd/.+|var/lib/docker/.+|var/lib/kubelet/.+|host/(proc|sys|dev|etc))($|/)
+            #
+            # The RKE2-specific entries are the containerd and kubelet trees
+            # under /var/lib/rancher/rke2 — on a busy node those are hundreds of
+            # overlay and tmpfs mounts, and they would drown the real disks in
+            # the node-exporter dashboard.
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/rancher/rke2/agent/containerd/.+|var/lib/kubelet/.+|run/containerd/.+|host/(proc|sys|dev|etc))($|/)
             - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$
           ports:
             - name: metrics

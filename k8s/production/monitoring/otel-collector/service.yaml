@@ -1,0 +1,36 @@
+# ============================================================================
+#  The single telemetry endpoint the apps know about. Compose: otel-collector
+#  on monitoring-network. Kubernetes:
+#     otel-collector.monitoring.svc.cluster.local:4317
+#  which is the value of the backend OTEL_EXPORTER_OTLP_ENDPOINT.
+# ============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: traces
+    app.kubernetes.io/part-of: task-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+      protocol: TCP
+    - name: self-metrics
+      port: 8888
+      targetPort: self-metrics
+      protocol: TCP
+    - name: app-metrics
+      port: 8889
+      targetPort: app-metrics
+      protocol: TCP

@@ -5,7 +5,7 @@
 #    1) API is slow ............. BackendHighLatencyP95  (+ BackendHighErrorRate)
 #    2) DB usage is high ........ ContainerNearMemoryLimit / ContainerCPUThrottling
 #    3) A container went down ... TargetDown + DatabaseDown / FrontendDown /
-#                                 ReverseProxyDown / ContainerRestarting
+#                                 GatewayEnvoyDown / ContainerRestarting
 #    4) Memory almost full ...... ContainerNearMemoryLimit + HostHighMemory
 #    5) SSL about to expire ..... SSLCertificateExpiringSoon (via blackbox probe)
 #
@@ -79,17 +79,44 @@ data:
               summary: 'Frontend has no available pods'
               description: 'The frontend Deployment has 0 available replicas for over 2 minutes — the site is not being served.'
 
-          # Was ReverseProxyDown (nginx|traefik container). The edge is now the
-          # ingress-nginx controller.
-          - alert: ReverseProxyDown
-            expr: sum(kube_deployment_status_replicas_available{namespace="ingress-nginx"}) < 1
+          # Was ReverseProxyDown (nginx|traefik container), then briefly the
+          # ingress-nginx Deployment. The edge is now Cilium's Gateway API
+          # Envoy, which runs as a DaemonSet in kube-system — so the question is
+          # not "are replicas available" but "is at least one node serving".
+          - alert: GatewayEnvoyDown
+            expr: absent(up{job="cilium-envoy"} == 1)
             for: 2m
             labels:
               severity: critical
-              service: proxy
+              service: gateway
             annotations:
-              summary: 'ingress-nginx controller has no available pods'
-              description: 'No ingress controller replica is available — the whole site is unreachable from outside.'
+              summary: 'No Cilium Envoy is up — the Gateway is not serving'
+              description: 'Every cilium-envoy instance is down or unscrapable. The Gateway terminates all external traffic, so the whole site is unreachable from outside.'
+
+          # A Cilium agent down means that node cannot program its datapath:
+          # its pods lose Service resolution and policy enforcement. With
+          # kube-proxy replaced there is no fallback path.
+          - alert: CiliumAgentDown
+            expr: count(up{job="cilium"} == 1) < count(kube_node_info)
+            for: 5m
+            labels:
+              severity: critical
+              service: cni
+            annotations:
+              summary: 'A Cilium agent is not running on every node'
+              description: 'Cilium replaces kube-proxy here, so a node without a healthy agent cannot resolve ClusterIPs or enforce NetworkPolicy at all.'
+
+          # Hubble is how you see WHY traffic is being dropped. Losing it is not
+          # an outage, but it blinds the next investigation.
+          - alert: HubbleDown
+            expr: absent(up{job="hubble"} == 1)
+            for: 15m
+            labels:
+              severity: warning
+              service: cni
+            annotations:
+              summary: 'Hubble metrics are not being scraped'
+              description: 'Flow-level visibility is gone: hubble_drop_total and the HTTP flow metrics will have a gap. Check the hubble-metrics Service in kube-system.'
 
           - alert: BackendNoAvailablePods
             expr: kube_deployment_status_replicas_available{namespace="tasks-app", deployment="backend"} < 1
@@ -299,7 +326,7 @@ data:
 
       # --- HTTPS / TLS — UNCHANGED ------------------------------------------
       # Fed by the blackbox exporter probing https://el-programmer.click, now
-      # served by ingress-nginx with a cert-manager certificate.
+      # served by the Cilium Gateway with a cert-manager certificate.
       - name: tls
         rules:
           - alert: HTTPSProbeFailed

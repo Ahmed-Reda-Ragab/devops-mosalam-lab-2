@@ -1,0 +1,42 @@
+# ============================================================================
+#  Wave -2 — the namespaces themselves.
+#
+#  Everything else targets one of these, so they must exist first. Argo CD sync
+#  waves run in ascending order and wait for each wave to become Healthy before
+#  starting the next.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: task-manager-namespaces
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: task-manager
+  source:
+    repoURL: https://github.com/Ahmed-Reda-Ragab/devops-mosalam-lab-2.git
+    targetRevision: main
+    path: k8s/production/namespaces
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    # No namespace on purpose. A Namespace is cluster-scoped, so Argo matches
+    # this Application against the project's "" destination. Naming a real
+    # namespace here (e.g. default) would be rejected by the AppProject fence.
+  syncPolicy:
+    automated:
+      # prune: false ON PURPOSE. Pruning a Namespace deletes EVERYTHING inside
+      # it, PVCs included. If someone renames a namespace in a commit, you want
+      # the old one left behind for a human to look at, not silently destroyed
+      # along with the database.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+  revisionHistoryLimit: 5

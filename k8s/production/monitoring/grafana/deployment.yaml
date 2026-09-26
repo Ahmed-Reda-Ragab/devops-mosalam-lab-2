@@ -1,0 +1,186 @@
+# ============================================================================
+#  Grafana — Compose service "grafana".
+#
+#  strategy: Recreate, not RollingUpdate. The PVC is ReadWriteOnce and holds a
+#  SQLite database; a rolling update would start the new pod while the old one
+#  still holds the file lock, and on most CSI drivers the new pod cannot even
+#  attach the volume. Recreate is correct here and costs a few seconds of
+#  downtime on a dashboard tool.
+#
+#  THE initContainer replaces grafana/scripts/fetch_dashboards.sh.
+#  The four community dashboards total ~840 KB of JSON. A ConfigMap is capped at
+#  1 MiB and kubectl apply stores a second copy of the content in the
+#  last-applied-configuration annotation, so committing them would be right at
+#  the edge of failing — and they would bloat every clone of the repo for no
+#  benefit, since they are public and immutable by ID. Fetching them at pod
+#  start keeps git clean.
+#
+#  ⚠️  The initContainer needs egress to grafana.com. On an air-gapped cluster,
+#  drop it and commit the JSON as its own ConfigMap instead (one per dashboard,
+#  to stay under 1 MiB each).
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboards
+    app.kubernetes.io/part-of: task-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: grafana
+        app.kubernetes.io/component: dashboards
+        app.kubernetes.io/part-of: task-manager
+      annotations:
+        # -> job="grafana". Grafana serves from the /grafana sub-path, so its
+        # metrics endpoint carries the prefix too.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/grafana/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472       # the "grafana" uid in the official image
+        runAsGroup: 472
+        fsGroup: 472
+      initContainers:
+        - name: fetch-community-dashboards
+          image: curlimages/curl:8.11.1
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              # id:name pairs, same list as grafana/scripts/fetch_dashboards.sh
+              for spec in \
+                "1860:node-exporter-full" \
+                "19792:docker-cadvisor" \
+                "14282:docker-monitoring" \
+                "3662:prometheus-stats"
+              do
+                id="${spec%%:*}"
+                name="${spec#*:}"
+                out="/dashboards/${name}-${id}.json"
+                echo "Fetching ${name} (${id})"
+                # --fail so a 404 does not silently write an HTML error page
+                # that Grafana would then log as a broken dashboard forever.
+                if curl -sSL --fail --max-time 30 \
+                     "https://grafana.com/api/dashboards/${id}/revisions/latest/download" \
+                     -o "${out}"; then
+                  echo "  ok -> ${out}"
+                else
+                  echo "  WARN: could not fetch ${name} (${id}); skipping"
+                  rm -f "${out}"
+                fi
+              done
+              echo "Done."
+          volumeMounts:
+            - name: community-dashboards
+              mountPath: /dashboards
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.2.0
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: admin
+            # Double underscore before FILE is Grafana file-provider syntax.
+            - name: GF_SECURITY_ADMIN_PASSWORD__FILE
+              value: /run/secrets/grafana_admin_password
+            - name: GF_SERVER_ROOT_URL
+              value: https://el-programmer.click/grafana/
+            - name: GF_SERVER_SERVE_FROM_SUB_PATH
+              value: "true"
+            # Do not phone home, and do not nag about updates in the UI.
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+            # Nested inside the PVC mount above — the kubelet mounts by
+            # increasing path length, so these land on top of it. Same layering
+            # the Compose file used.
+            - name: custom-dashboards
+              mountPath: /var/lib/grafana/dashboards/custom
+              readOnly: true
+            - name: community-dashboards
+              mountPath: /var/lib/grafana/dashboards/community
+              readOnly: true
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboard-provider
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /grafana/api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /grafana/api/health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-data
+        - name: custom-dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: community-dashboards
+          emptyDir: {}
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-provider
+          configMap:
+            name: grafana-dashboard-provider
+        - name: secrets
+          secret:
+            secretName: grafana-secrets
+            defaultMode: 0400

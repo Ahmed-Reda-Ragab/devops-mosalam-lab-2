@@ -1,11 +1,32 @@
 # ============================================================================
 #  NetworkPolicies for tasks-app — the equivalent of Compose's
-#  `private-network: internal: true`, where only Traefik could reach the
-#  backend and frontend.
+#  private-network: internal: true, where only Traefik could reach the backend
+#  and frontend.
 #
-#  Read the header of k8s/production/database/networkpolicy.yaml first: the
-#  same CNI caveat applies (a CNI that does not enforce policies accepts these
-#  objects and quietly ignores them).
+#  ── HOW GATEWAY TRAFFIC APPEARS, AND WHY THERE IS NO RULE FOR IT ──────────
+#  The Ingress version of this file allowed traffic from the ingress controller's
+#  NAMESPACE, because that controller was an ordinary pod with a pod identity.
+#  Cilium's Gateway is not: with gatewayAPI.hostNetwork.enabled=true its Envoy
+#  runs in the host network namespace, so a request proxied to the backend
+#  arrives carrying Cilium's reserved:host identity — not a pod IP, and not a
+#  namespace. A Kubernetes NetworkPolicy has no selector that can name it.
+#
+#  Cilium also allows reserved:host -> pod ingress unconditionally by default
+#  (hostAllowLocalhost: auto). That is deliberate on Cilium's part: the kubelet's
+#  liveness and readiness probes come from the same identity, so blocking it
+#  would make every probe fail. The practical consequence for this file: Gateway
+#  traffic is NOT what these policies control, and adding an ipBlock of node
+#  addresses would be security theatre.
+#
+#  To actually constrain what the Gateway may ask for, you need a
+#  CiliumNetworkPolicy with fromEntities: [host, remote-node] and L7 rules — see
+#  routes/ciliumnetworkpolicy-api-key.yaml.optional, which is exactly that.
+#
+#  These policies therefore cover what they can cover well: POD-TO-POD traffic
+#  inside and into the namespace.
+#
+#  ⚠️  Your CNI is Cilium, so these are enforced. On a CNI that ignores
+#  NetworkPolicy they would apply cleanly and do nothing.
 # ============================================================================
 
 # --- 1. Default deny ---------------------------------------------------------
@@ -21,7 +42,8 @@ spec:
   policyTypes:
     - Ingress
 ---
-# --- 2. Backend: the ingress controller, Locust, and Prometheus ---------------
+# --- 2. Backend: Locust and Prometheus ---------------------------------------
+# Gateway traffic is absent on purpose — see the header.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -37,11 +59,7 @@ spec:
     - Ingress
   ingress:
     - from:
-        # Public traffic, via /api and /pro-api.
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
-        # Load tests hit the Service directly, bypassing the ingress.
+        # Load tests hit the Service directly, bypassing the Gateway.
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: locust
@@ -53,11 +71,15 @@ spec:
         - protocol: TCP
           port: 8000
 ---
-# --- 3. Frontend and Locust: ingress controller only -------------------------
+# --- 3. Frontend and Locust --------------------------------------------------
+# Both are reached ONLY through the Gateway, which as explained above is not
+# expressible here. The policy exists so that nothing ELSE in the cluster can
+# reach them: no pod-to-pod source is allowed, and the default-deny above plus
+# Cilium's host exemption leaves exactly the Gateway path open.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: web-allow-ingress-controller
+  name: web-deny-pod-to-pod
   namespace: tasks-app
   labels:
     app.kubernetes.io/part-of: task-manager
@@ -70,10 +92,11 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    # Prometheus only — nothing else in the cluster has business talking to them.
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
+              kubernetes.io/metadata.name: monitoring
       ports:
         - protocol: TCP
           port: 80

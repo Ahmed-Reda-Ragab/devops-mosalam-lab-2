@@ -1,0 +1,116 @@
+# ============================================================================
+#  /etc/rancher/rke2/config.yaml — the ACTUAL config of this cluster.
+#
+#  Reproduced here from the live setup so the repo documents it. Your cluster is
+#  already running with these values; this file is documentation plus the
+#  starting point for rebuilding a node (or a whole second cluster — see
+#  docs-rke2/09-runbook-rebuild-from-scratch.md).
+#
+#  RKE2 version: v1.35.5+rke2r2
+#
+#  Per-node differences, and nothing else:
+#    * node-name        — the node's own name
+#    * node-ip          — its eth2 (pod fabric) address
+#    * advertise-address — its eth1 (control) address, on node 1 only
+#    * server:          — present on nodes 2 and 3, absent on node 1
+#
+#  ── THE ADDRESS MAP ───────────────────────────────────────────────────────
+#  Node          eth0 (NAT/1500)   eth1 (control/1400)  eth2 (pod fabric/1400)
+#  rke2-k8s-01   192.168.32.20     172.16.0.20          172.17.0.19
+#  rke2-k8s-02   192.168.32.21     172.16.0.21          172.17.0.20
+#  rke2-k8s-03   192.168.32.22     172.16.0.22          172.17.0.21
+# ============================================================================
+
+# ---- Cluster identity ------------------------------------------------------
+# Shared secret that authorises a node to join. Same value on all three.
+token: "REPLACE_WITH_SHARED_CLUSTER_TOKEN"
+
+node-name: rke2-k8s-01
+
+# ---- Node addressing -------------------------------------------------------
+# node-ip on eth2 (pod fabric): this is the address Cilium uses for
+# autoDirectNodeRoutes, so pod-to-pod traffic between nodes rides the fabric
+# rather than the control network or NAT.
+#
+# With three NICs, RKE2 would otherwise pick whichever interface the default
+# route uses — eth0, the NAT interface — and every node-to-node flow would leave
+# through NAT. That is exactly what the task forbids.
+node-ip: 172.17.0.19
+kubelet-arg:
+  - "node-ip=172.17.0.19"
+
+# advertise-address on eth1 (control): API server traffic gets its own path,
+# separate from pod traffic. etcd is latency-sensitive, and a pod saturating the
+# fabric must not be able to slow down the control plane.
+advertise-address: 172.16.0.20
+
+# Every address the API server certificate must be valid for. A missing entry
+# surfaces much later as an x509 error from kubectl or from Cilium.
+tls-san:
+  - 172.16.0.20
+  - 172.16.0.21
+  - 172.16.0.22
+  - 172.17.0.19
+  - 172.17.0.20
+  - 172.17.0.21
+  # Add these when the domain is wired up, so kubectl works over the hostname:
+  # - el-programmer.click
+  # - API_VIP_IF_YOU_ADD_ONE
+
+# ---- Cluster networking ----------------------------------------------------
+# Must match ipv4NativeRoutingCIDR and clusterPoolIPv4PodCIDRList in
+# k8s/cluster/cilium-values.yaml. A mismatch means Cilium masquerades traffic it
+# should route, and pod source IPs disappear.
+cluster-cidr: 10.42.0.0/16
+service-cidr: 10.43.0.0/16
+cluster-dns: 10.43.0.10
+cluster-domain: cluster.local
+
+# ---- CNI: none, on purpose -------------------------------------------------
+# RKE2 deploys no CNI at all; Cilium is installed afterwards with Helm. The
+# nodes therefore sit at NotReady until Cilium is up, which is expected and not
+# a fault.
+#
+# The alternative (`cni: cilium`) would let RKE2 manage the Cilium chart, and
+# values would go in a HelmChartConfig. Installing it separately gives full
+# control of the chart version and every value — worth it here because this
+# setup needs native routing, cluster-pool IPAM, three devices and Gateway API,
+# which is a long way from the bundled defaults.
+cni: none
+
+# GATEWAY (1/2): Cilium replaces kube-proxy in eBPF. Required by the Cilium
+# Gateway API controller.
+disable-kube-proxy: true
+
+# GATEWAY (2/2): no bundled ingress controller. Routing is Gateway API, and the
+# Cilium Envoy binds :80/:443 on every node with hostNetwork — two things cannot
+# both own those ports.
+# (ingress-nginx reached end-of-life in March 2026 anyway; RKE2 v1.36 swapped
+# the bundled default to Traefik and v1.37 removes ingress-nginx entirely.)
+disable:
+  - rke2-ingress-nginx
+
+write-kubeconfig-mode: "0644"
+
+# ============================================================================
+#  ON NODES 2 AND 3, ADD THIS AND CHANGE THE FOUR PER-NODE VALUES ABOVE:
+#
+#    server: https://172.16.0.20:9345
+#
+#  Port 9345 is the RKE2 registration port (distinct from the API server on
+#  6443). Node 1 is a single point of failure for JOINING a new node, but not
+#  for running the cluster — etcd keeps quorum with any two nodes.
+# ============================================================================
+
+# ---- Not currently set, and worth adding -----------------------------------
+# etcd holds ALL cluster state. Without snapshots, losing quorum permanently
+# means rebuilding from scratch. RKE2 writes them to
+# /var/lib/rancher/rke2/server/db/snapshots — copy them OFF the cluster.
+# etcd-snapshot-schedule-cron: "0 */6 * * *"
+# etcd-snapshot-retention: 20
+#
+# CIS hardening. protect-kernel-defaults makes the kubelet REFUSE to start if the
+# sysctls it needs are wrong, instead of running with a silently unsafe kernel.
+# Turn it on only after confirming /etc/sysctl.d/99-kubernetes.conf is applied,
+# or rke2-server will not come back up.
+# protect-kernel-defaults: true

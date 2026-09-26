@@ -1,0 +1,25 @@
+# Compose: loki:3100 on monitoring-network.
+# Kubernetes: loki.monitoring.svc.cluster.local:3100 — the URL in both
+# Promtail's clients block and Grafana's Loki datasource.
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/component: logs
+    app.kubernetes.io/part-of: task-manager
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: 9096
+      targetPort: grpc
+      protocol: TCP

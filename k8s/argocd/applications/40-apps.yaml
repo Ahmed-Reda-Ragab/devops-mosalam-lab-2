@@ -1,0 +1,64 @@
+# ============================================================================
+#  Wave 2 — backend, frontend, Locust and the Ingresses.
+#
+#  THIS IS THE APPLICATION THE CI PIPELINE DRIVES. The bump-manifests job in
+#  .github/workflows/ci.yml rewrites the image tag in
+#  k8s/production/apps/*/deployment.yaml and pushes that commit; Argo CD sees
+#  the new revision and rolls the Deployment. The commit IS the deploy, and
+#  `git log -- k8s/production/apps` is the deploy history.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: task-manager-apps
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: task-manager
+  source:
+    repoURL: https://github.com/Ahmed-Reda-Ragab/devops-mosalam-lab-2.git
+    targetRevision: main
+    path: k8s/production/apps
+    directory:
+      recurse: true
+      exclude: "*.example"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: tasks-app
+  syncPolicy:
+    automated:
+      # Safe to prune here: everything in this namespace is stateless and
+      # rebuilt from an image.
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
+      # Skip resources that are already in sync instead of re-applying all
+      # of them on every pass. On a 25-object Application this is the difference
+      # between a 2-second and a 20-second sync.
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  ignoreDifferences:
+    # ⚠️  THE MOST IMPORTANT FIVE LINES IN THIS DIRECTORY.
+    # The HPA owns spec.replicas at runtime. Git says 3. The moment the HPA
+    # scales to 7, Argo sees a diff and selfHeal scales it back to 3 — and the
+    # HPA immediately scales back up. Without this, the two controllers fight
+    # each other in a loop for as long as there is load, and the pod churn looks
+    # exactly like a crash.
+    - group: apps
+      kind: Deployment
+      name: backend
+      jsonPointers:
+        - /spec/replicas
+  revisionHistoryLimit: 10

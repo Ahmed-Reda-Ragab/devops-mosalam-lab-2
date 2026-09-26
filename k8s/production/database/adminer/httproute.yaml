@@ -1,0 +1,59 @@
+# ============================================================================
+#  Adminer on adminer.el-programmer.click.
+#  Compose: traefik.http.routers.adminer.rule=Host(`adminer.el-programmer.click`)
+#
+#  Note what is NOT here any more: the Certificate. The Ingress version needed
+#  its own cert in this namespace because an Ingress can only reference a TLS
+#  Secret in its own namespace. The shared Gateway terminates TLS centrally, so
+#  adminer.el-programmer.click is just another SAN on the one certificate in
+#  k8s/production/gateway/certificate.yaml.
+#
+#  ⚠️  SECURITY — UNCHANGED FROM COMPOSE, STILL WRONG.
+#  This is a full database client on the public internet with no authentication
+#  in front of it. Anyone who guesses a DB password owns the data. Two fixes:
+#
+#   a) Put an L7 gate in front of it the same way /api does — see
+#      ../../apps/routes/ciliumnetworkpolicy-api-key.yaml.optional for the
+#      pattern. Gateway API core has no auth filter, so the enforcement has to
+#      happen in the datapath or in the app.
+#
+#   b) Do not expose it at all. Delete this file and reach it on demand:
+#        kubectl -n tasks-db port-forward svc/adminer 8083:8080
+#      This is what I would do. It is a debugging tool, not a service.
+# ============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: adminer
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: adminer
+    app.kubernetes.io/part-of: task-manager
+spec:
+  parentRefs:
+    - name: main
+      namespace: gateway
+      kind: Gateway
+      group: gateway.networking.k8s.io
+      sectionName: https
+  hostnames:
+    - adminer.el-programmer.click
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              X-Content-Type-Options: nosniff
+              X-Frame-Options: DENY
+              Strict-Transport-Security: max-age=31536000; includeSubDomains
+            remove:
+              - Server
+      backendRefs:
+        - name: adminer
+          port: 8080
+          kind: Service
+          group: ""

@@ -1,0 +1,44 @@
+# ============================================================================
+#  Locust web UI on load.el-programmer.click.
+#  Compose: traefik.http.routers.locust.rule=Host(`load.el-programmer.click`)
+#
+#  No proxy-read-timeout annotation is needed. The Ingress version had to raise
+#  it to 3600s because nginx cuts idle upstream connections at 60s and Locust
+#  streams live stats. Envoy's default stream idle timeout does not apply the
+#  same way to an active SSE stream, and Cilium does not impose nginx's
+#  read-timeout semantics. If the UI does start dropping, that is a
+#  CiliumEnvoyConfig tuning job, not an annotation.
+#
+#  ⚠️  UNAUTHENTICATED, on the public internet, able to start a load test against
+#  your own production API. The Compose stack had the same hole. Either put it
+#  behind the same L7 policy pattern as /api, or delete this file and use
+#     kubectl -n tasks-app port-forward svc/locust 8089:8089
+#  which is what I would do — it is a debugging tool, not a service.
+# ============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: locust
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: locust
+    app.kubernetes.io/part-of: task-manager
+spec:
+  parentRefs:
+    - name: main
+      namespace: gateway
+      kind: Gateway
+      group: gateway.networking.k8s.io
+      sectionName: https
+  hostnames:
+    - load.el-programmer.click
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: locust
+          port: 8089
+          kind: Service
+          group: ""

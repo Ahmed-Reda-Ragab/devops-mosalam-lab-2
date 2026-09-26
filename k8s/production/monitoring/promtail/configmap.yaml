@@ -1,0 +1,94 @@
+# ============================================================================
+#  Promtail config — this is the most heavily rewritten file in the conversion.
+#
+#  Compose used docker_sd_configs against /var/run/docker.sock. That does not
+#  exist on a Kubernetes node (containerd, not Docker), so discovery moves to
+#  kubernetes_sd_configs and the log SOURCE moves to the files the kubelet
+#  writes under /var/log/pods/.
+#
+#  ⚠️  THE LABEL THAT MATTERS MOST: `service`.
+#  Compose derived it from the label com_docker_compose_service. Grafana's
+#  Tempo datasource maps a span's `service.name` onto Loki's `service` label
+#  (tracesToLogsV2 in grafana/provisioning/datasources/datasource.yml), and that
+#  mapping is the entire trace -> logs link. Here it is derived from
+#  app.kubernetes.io/name, which is set to "backend" on the backend pods and
+#  matches OTEL_SERVICE_NAME=backend. Break this relabel and the "View logs for
+#  this span" button silently returns nothing.
+#
+#  `-config.expand-env=true` on the DaemonSet is what makes ${HOSTNAME} below
+#  resolve to the node name.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: promtail
+    app.kubernetes.io/component: logs
+    app.kubernetes.io/part-of: task-manager
+data:
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+
+    positions:
+      # On a hostPath, not an emptyDir: the read offsets must survive a pod
+      # restart, otherwise Promtail re-ships every log file from byte 0 and you
+      # get a flood of duplicates in Loki.
+      filename: /run/promtail/positions.yaml
+
+    clients:
+      - url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+
+    scrape_configs:
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+            # Only this node's pods. Without it, every Promtail on every node
+            # would try to tail every pod in the cluster and find no files.
+            selectors:
+              - role: pod
+                field: spec.nodeName=${HOSTNAME}
+
+        pipeline_stages:
+          # containerd writes  "<RFC3339Nano> <stream> <flags> <message>".
+          # Without this stage the whole line, timestamp and all, becomes the
+          # log message and Loki's timestamps are the ingest time, not the event
+          # time.
+          - cri: {}
+
+        relabel_configs:
+          # Skip pods that have no logs to read yet.
+          - source_labels: [__meta_kubernetes_pod_phase]
+            action: drop
+            regex: (Succeeded|Failed)
+
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+
+          # --- the trace <-> logs join key. See the header. -----------------
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: service
+          # Fall back to the container name for anything not carrying our
+          # standard label (third-party pods, the ingress controller, ...), so
+          # nothing ends up with an empty `service`.
+          - source_labels: [service, __meta_kubernetes_pod_container_name]
+            regex: ";(.+)"
+            target_label: service
+            replacement: $1
+
+          # The kubelet lays logs out as
+          #   /var/log/pods/<namespace>_<pod>_<uid>/<container>/0.log
+          # so globbing on the uid + container name is enough to find them.
+          - source_labels: [__meta_kubernetes_pod_uid, __meta_kubernetes_pod_container_name]
+            separator: /
+            target_label: __path__
+            replacement: /var/log/pods/*$1/*.log

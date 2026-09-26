@@ -1,25 +1,50 @@
 # ============================================================================
-#  Namespaces — the Kubernetes replacement for the three Compose networks.
+#  Namespaces — the Kubernetes replacement for the Compose networks.
 #
 #  Compose                     ->  Kubernetes
 #  --------------------------------------------------------------------------
 #  private-network (internal)  ->  namespace  tasks-app     + NetworkPolicy
 #  db-network                  ->  namespace  tasks-db      + NetworkPolicy
 #  monitoring-network          ->  namespace  monitoring    + NetworkPolicy
-#  public-network              ->  the ingress-nginx controller (its own ns)
+#  public-network              ->  namespace  gateway       (the shared Gateway)
+#
+#  ── THE LABEL THAT GRANTS PLATFORM ACCESS ─────────────────────────────────
+#      gateway.el-programmer.click/access: "true"
+#
+#  The shared Gateway in k8s/production/gateway/gateway.yaml sets
+#  allowedRoutes.namespaces.from: Selector against exactly this label. A
+#  namespace without it CANNOT attach an HTTPRoute to the Gateway, no matter what
+#  its HTTPRoute says — the route gets a NotAllowedByListeners condition and no
+#  traffic. Namespaces are cluster-scoped, so only a platform admin can add the
+#  label. That is the whole multi-tenancy boundary, in one label.
 #
 #  Pod Security Standards:
-#    tasks-app / tasks-db  -> "baseline" (blocks privileged pods; nginx and
-#                             mysql still run fine).
-#    monitoring            -> "privileged": node-exporter and cAdvisor need
-#                             hostPath + hostPID to read the node.
+#    tasks-app / tasks-db / gateway -> "baseline" (blocks privileged pods; nginx
+#                                      and mysql still run fine).
+#    monitoring                     -> "privileged": node-exporter and Promtail
+#                                      need hostPath / host PID to read the node.
 # ============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/part-of: task-manager
+    # The Gateway itself lives here, and so do cert-manager's ephemeral ACME
+    # solver HTTPRoutes (they are created in the Certificate's namespace). Both
+    # need the label, or HTTP-01 validation can never attach to the :80 listener.
+    gateway.el-programmer.click/access: "true"
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: tasks-app
   labels:
     app.kubernetes.io/part-of: task-manager
+    gateway.el-programmer.click/access: "true"
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -30,6 +55,9 @@ metadata:
   name: tasks-db
   labels:
     app.kubernetes.io/part-of: task-manager
+    # Only Adminer is published from here; MySQL and ProxySQL stay internal and
+    # are additionally fenced by database/networkpolicy.yaml.
+    gateway.el-programmer.click/access: "true"
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/audit: baseline
     pod-security.kubernetes.io/warn: baseline
@@ -40,5 +68,6 @@ metadata:
   name: monitoring
   labels:
     app.kubernetes.io/part-of: task-manager
-    # node-exporter + cAdvisor mount /proc, /sys and / from the host.
+    gateway.el-programmer.click/access: "true"
+    # node-exporter and Promtail mount /proc, /sys and the node's log tree.
     pod-security.kubernetes.io/enforce: privileged

@@ -1,0 +1,136 @@
+# ============================================================================
+#  NetworkPolicies for the monitoring namespace - the equivalent of Compose
+#  monitoring-network being declared "internal: true".
+#
+#  Read the header of k8s/production/database/networkpolicy.yaml first (the CNI
+#  enforcement caveat applies here too).
+#
+#  The shape is different from the other two namespaces: monitoring is mostly an
+#  INBOUND target (the whole cluster pushes telemetry at it), so the rules are
+#  about which ports accept what, not about which namespace may connect.
+# ============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# --- The three UIs ----------------------------------------------------------
+# No Gateway rule: its Envoy runs on the host network and arrives as
+# reserved:host, which Cilium allows by default and no NetworkPolicy selector can
+# name. See the header of ../apps/networkpolicy.yaml for the full reasoning.
+#
+# allow-intra-namespace below already lets Grafana query Prometheus/Loki/Tempo
+# and lets Prometheus scrape all three, so these pods need no additional
+# pod-to-pod sources. Listing them here with an empty ingress makes the intent
+# explicit: reachable from the Gateway and from inside this namespace, nothing
+# else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: uis-deny-cross-namespace
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [grafana, prometheus, alertmanager]
+  policyTypes:
+    - Ingress
+  ingress: []
+---
+# --- OTLP ingest: the whole cluster may push traces/metrics at the collector --
+# The backend (tasks-app) and the ingress controller both do.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector-allow-otlp
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: otel-collector
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+---
+# --- Everything inside monitoring may talk to everything else inside it -------
+# Prometheus scrapes all of them, Promtail pushes to Loki, the collector pushes
+# to Tempo, Tempo remote-writes to Prometheus, Grafana queries all three.
+# Enumerating that graph pair by pair would be a maintenance burden with no
+# security benefit: it is one trust domain.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-intra-namespace
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+---
+# --- node-exporter and Promtail run with hostNetwork / on the node, so when
+#     Prometheus scrapes them the source address is a NODE IP, not a pod IP. A
+#     podSelector cannot match that, which is why this rule uses ipBlock.
+#
+#     Narrow these CIDRs to your actual node subnet. The three RFC1918 ranges
+#     cover every managed-cluster node network; 0.0.0.0/0 would defeat the point.
+#
+#     NOTE: egress is deliberately NOT restricted in this namespace. Prometheus
+#     must reach the kube-apiserver, Alertmanager must reach api.telegram.org,
+#     and the Grafana initContainer must reach grafana.com. Locking that down is
+#     a separate exercise; doing it wrong fails in ways that are hard to debug.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: node-agents-allow-scrape
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [node-exporter, promtail]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+        - ipBlock:
+            cidr: 10.0.0.0/8
+        - ipBlock:
+            cidr: 172.16.0.0/12
+        - ipBlock:
+            cidr: 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 9100
+        - protocol: TCP
+          port: 9080

@@ -1,0 +1,53 @@
+# ============================================================================
+#  Wave 3 — the observability stack. Last on purpose: it observes the other
+#  three, so there is nothing for it to see until they are up, and a slow
+#  Prometheus start should never delay the application rollout.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: task-manager-monitoring
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: task-manager
+  source:
+    repoURL: https://github.com/Ahmed-Reda-Ragab/devops-mosalam-lab-2.git
+    targetRevision: main
+    path: k8s/production/monitoring
+    directory:
+      recurse: true
+      exclude: "*.example"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      # prune: false — the StatefulSets here hold the metric, log and trace
+      # history. Same reasoning as the database.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      # ServerSideApply matters more here than anywhere else: the
+      # grafana-dashboards ConfigMap is ~33 KB, and client-side apply would
+      # store a second copy of it in a last-applied-configuration annotation.
+      # Add a few more dashboards and that crosses the 1 MiB object limit.
+      - ServerSideApply=true
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+  revisionHistoryLimit: 5

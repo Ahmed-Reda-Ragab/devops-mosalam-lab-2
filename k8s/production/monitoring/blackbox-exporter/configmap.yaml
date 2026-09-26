@@ -30,8 +30,9 @@ data:
             # Let's Encrypt cert, so verification passes and a broken/expired/
             # misconfigured chain would (correctly) fail the probe.
             # NOTE: in the first minutes after a fresh install — before ACME has
-            # finished issuing — ingress-nginx serves its self-signed default
-            # cert, so HTTPSProbeFailed fires briefly until the real cert lands.
+            # finished issuing — the Gateway has no certificate at all and the
+            # https listener is not Programmed, so HTTPSProbeFailed fires briefly
+            # until cert-manager populates the Secret.
             # If you deployed with letsencrypt-STAGING, this stays failing:
             # the staging chain is untrusted by design.
             insecure_skip_verify: false

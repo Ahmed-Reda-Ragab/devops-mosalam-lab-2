@@ -1,0 +1,114 @@
+# ============================================================================
+#  Tempo — Compose services "tempo" + "tempo-init".
+#
+#  THE tempo-init CONTAINER IS GONE. Compose needed a one-shot
+#  `chown -R 10001:10001 /var/tempo` container because a fresh Docker named
+#  volume is owned by root and Tempo runs as uid 10001, so it would crash-loop
+#  on "permission denied" writing its WAL.
+#
+#  Kubernetes solves this declaratively: `fsGroup: 10001` makes the kubelet set
+#  the volume's group ownership at mount time. One line replaces a whole
+#  container plus the depends_on: service_completed_successfully that sequenced
+#  it. This is the cleanest win in the entire conversion.
+# ============================================================================
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tempo
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/component: traces
+    app.kubernetes.io/part-of: task-manager
+spec:
+  serviceName: tempo
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tempo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tempo
+        app.kubernetes.io/component: traces
+        app.kubernetes.io/part-of: task-manager
+      annotations:
+        # -> job="tempo". The TempoMetricsGeneratorWriteFailing alert reads
+        # prometheus_remote_storage_samples_failed_total{job="tempo"}, so this
+        # job name has to stay exactly as it was in Compose.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3200"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # This is what replaced the tempo-init chown container.
+        fsGroup: 10001
+      containers:
+        - name: tempo
+          image: grafana/tempo:2.6.1
+          args:
+            - -config.file=/etc/tempo/tempo.yaml
+          ports:
+            - name: http
+              containerPort: 3200      # HTTP API — Grafana's datasource
+              protocol: TCP
+            - name: otlp-grpc
+              containerPort: 4317      # direct push, bypassing the collector
+              protocol: TCP
+            - name: otlp-http
+              containerPort: 4318
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tempo
+              readOnly: true
+            - name: data
+              mountPath: /var/tempo
+            # readOnlyRootFilesystem is on below; give the process a scratch dir.
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              # Traces are the heaviest signal in the stack; more headroom than
+              # Loki. Drop block_retention in the ConfigMap if memory gets tight.
+              cpu: 500m
+              memory: 768Mi
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: tempo-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName: gp3
+        resources:
+          requests:
+            storage: 20Gi

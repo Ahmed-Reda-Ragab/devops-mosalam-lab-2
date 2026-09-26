@@ -47,6 +47,24 @@ docker compose -f compose/docker-compose.monitoring.yml --env-file .env up -d --
 > single-file** variants kept for reference. The current deployment is the three
 > stacks in [compose/](compose/).
 
+### Run it on Kubernetes instead (GitOps)
+
+The same stack is available as plain Kubernetes manifests under [k8s/](k8s/),
+running on a 3-node **RKE2** cluster with **Cilium** (eBPF, native routing,
+kube-proxy replacement) and synced by **Argo CD**. Traefik is replaced by the
+**Gateway API** implementation built into Cilium plus cert-manager — 11 Ingress
+objects collapse into 8 HTTPRoutes and one certificate. The MySQL pair becomes two
+StatefulSets, the backup cron becomes a `CronJob`, and CI stops deploying: it
+commits an image tag and Argo CD rolls it out.
+
+```bash
+kubectl apply -f k8s/argocd/00-appproject.yaml
+kubectl apply -f k8s/argocd/01-root-app.yaml
+```
+
+See [k8s/README.md](k8s/README.md) for the cluster prerequisites, the secret
+handling, and a full account of what changed relative to the Compose stack.
+
 ### Access
 
 Traefik is the single public entrypoint on `80`/`443`; `80` redirects to `443`.

@@ -1,0 +1,91 @@
+# ============================================================================
+#  The shared Gateway — one entry point for the whole platform.
+#
+#  This single object replaces the Traefik container from
+#  compose/docker-compose.apps.yml AND the 11 Ingress resources of the previous
+#  iteration. Cilium's Gateway controller programs its own Envoy for it; there is
+#  no separate controller Deployment to run, because Cilium is already the CNI.
+#
+#  ── WHY Gateway API AND NOT Ingress ────────────────────────────────────────
+#  Ingress has one extension point: annotations. Everything Traefik did —
+#  rate limits, header rewriting, redirects, auth — had to be smuggled through
+#  vendor-prefixed annotation strings that the API server cannot validate. Three
+#  concrete consequences that bit the Ingress version of this repo:
+#
+#   1. ANNOTATIONS ARE PER-INGRESS, NOT PER-PATH. /api needed a rate limit and an
+#      auth gate, /pro-api deliberately needed neither, / needed a different
+#      backend. That forced THREE Ingress objects for one hostname. Gateway API
+#      puts filters on the RULE, so one HTTPRoute expresses all of it.
+#
+#   2. NO CROSS-NAMESPACE TLS. An Ingress can only reference a TLS Secret in its
+#      own namespace, and a Secret cannot be shared across namespaces. Serving
+#      el-programmer.click from both tasks-app and monitoring therefore needed
+#      TWO Let's Encrypt certificates for the same name. Here the cert lives once
+#      in this namespace, and routes attach from anywhere.
+#
+#   3. NO ROLE SEPARATION. Anyone who could create an Ingress could claim any
+#      hostname and set any annotation. Gateway API splits the roles: the
+#      platform owns this Gateway, its TLS and which namespaces may attach
+#      (allowedRoutes below); application teams own only their HTTPRoutes.
+#
+#  ── MULTI-TENANT ROUTING ───────────────────────────────────────────────────
+#  allowedRoutes.namespaces.from: Selector is the tenancy boundary. A namespace
+#  joins the platform by carrying the label
+#      gateway.el-programmer.click/access: "true"
+#  which only a platform admin can set (namespaces are cluster-scoped). A team
+#  that creates an HTTPRoute in an unlabelled namespace gets a clear
+#  "NotAllowedByListeners" condition on their own object — not a silent failure,
+#  and not access.
+#
+#  Scaling this further: give each tenant its own Gateway on its own hostname in
+#  its own namespace, and they get their own TLS and listener config without any
+#  ability to affect a neighbour. That is the model Ingress cannot express.
+# ============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: main
+  namespace: gateway
+  labels:
+    app.kubernetes.io/name: main-gateway
+    app.kubernetes.io/part-of: task-manager
+spec:
+  # Provided by Cilium once gatewayAPI.enabled=true and the Gateway API CRDs are
+  # installed. Verify it exists BEFORE expecting any of this to work:
+  #    kubectl get gatewayclass cilium
+  gatewayClassName: cilium
+
+  listeners:
+    # ---- :80 — ACME challenges and the redirect to HTTPS -------------------
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              gateway.el-programmer.click/access: "true"
+
+    # ---- :443 — everything real -------------------------------------------
+    - name: https
+      protocol: HTTPS
+      port: 443
+      # No hostname on purpose. A listener hostname of "*.el-programmer.click"
+      # would NOT match the apex el-programmer.click — a wildcard matches
+      # exactly one DNS label. Leaving it unset accepts any SNI, and each
+      # HTTPRoute pins its own hostnames, which is where that belongs.
+      tls:
+        mode: Terminate
+        certificateRefs:
+          # Same namespace as this Gateway, so no ReferenceGrant is needed.
+          # Produced by certificate.yaml next to this file.
+          - kind: Secret
+            group: ""
+            name: el-programmer-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              gateway.el-programmer.click/access: "true"

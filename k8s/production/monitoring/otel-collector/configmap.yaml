@@ -1,0 +1,126 @@
+# ============================================================================
+#  OpenTelemetry Collector — ported from otel/otel-collector-config.yml.
+#
+#  Why a collector at all when Tempo can receive OTLP directly?
+#    * The app only ever knows one endpoint. Swapping Tempo for Jaeger/Datadog
+#      is a config change here, not a rebuild + redeploy of every service.
+#    * Batching + memory limiting happen outside the app process, so a slow or
+#      down backend degrades the collector, not the request path.
+#    * Central place to sample, drop noisy spans and scrub PII before storage.
+#
+#  Changes from the Compose version:
+#    * exporter endpoint -> tempo.monitoring.svc.cluster.local:4317
+#    * the k8sattributes processor is added: it decorates every span with
+#      k8s.pod.name / k8s.namespace.name / k8s.deployment.name, which is what
+#      lets you filter traces by pod in Grafana. There was nothing to add in
+#      Compose because there was one container per service.
+#    * memory_limiter raised in step with the container memory limit.
+#
+#  NOTE: the only trace producer left is the backend. Traefik used to push spans
+#  here too, and so could ingress-nginx; Cilium's Gateway Envoy cannot. See the
+#  OTEL_TRACES_SAMPLER_ARG comment in ../../apps/backend/configmap.yaml.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: otel-collector
+    app.kubernetes.io/component: traces
+    app.kubernetes.io/part-of: task-manager
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317   # used by the FastAPI backend
+          http:
+            endpoint: 0.0.0.0:4318   # for browser / curl style OTLP-HTTP senders
+
+    processors:
+      # MUST be first: refuses new data before the container hits its memory
+      # limit and gets OOM-killed by the kubelet.
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 384
+        spike_limit_mib: 96
+
+      # Kubernetes identity on every span. Needs the RBAC in rbac.yaml.
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.node.name
+            - k8s.deployment.name
+            - k8s.statefulset.name
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: connection
+
+      # Adds host/OS/container attributes so spans carry where they ran.
+      resourcedetection:
+        detectors: [env, system]
+        timeout: 2s
+        override: false
+
+      # Groups spans into fewer, larger export calls — the single biggest lever
+      # on collector CPU and network overhead.
+      batch:
+        timeout: 5s
+        send_batch_size: 1024
+        send_batch_max_size: 2048
+
+    exporters:
+      # Ship traces to Tempo over OTLP/gRPC. Plaintext is fine: the hop never
+      # leaves the cluster network.
+      otlp/tempo:
+        endpoint: tempo.monitoring.svc.cluster.local:4317
+        tls:
+          insecure: true
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+        sending_queue:
+          enabled: true
+          queue_size: 1000
+
+      # Any OTLP *metrics* an app pushes get re-exposed in Prometheus format on
+      # :8889 and scraped by the otel-collector-apps job.
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        send_timestamps: true
+        resource_to_telemetry_conversion:
+          enabled: true
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133   # probe target
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+          exporters: [otlp/tempo]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [prometheus]
+      telemetry:
+        logs:
+          level: info
+        metrics:
+          # The collector own health metrics (queue depth, refused spans, ...)
+          # scraped by the otel-collector job.
+          address: 0.0.0.0:8888

@@ -1,0 +1,41 @@
+# ============================================================================
+#  Dashboard provisioning — from grafana/provisioning/dashboards/dashboard.yml.
+#
+#  Split into TWO providers because the dashboards now arrive from two places:
+#    custom/    <- the grafana-dashboards ConfigMap (repo-specific, in git)
+#    community/ <- fetched from grafana.com by the initContainer at pod start
+#  Compose had one bind mount and so needed only one provider.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboards
+    app.kubernetes.io/part-of: task-manager
+data:
+  dashboard.yaml: |
+    apiVersion: 1
+
+    providers:
+      - name: 'Task Manager'
+        orgId: 1
+        folder: 'Task Manager'
+        type: file
+        disableDeletion: false
+        editable: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards/custom
+
+      - name: 'Community'
+        orgId: 1
+        folder: 'Community'
+        type: file
+        disableDeletion: false
+        editable: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards/community

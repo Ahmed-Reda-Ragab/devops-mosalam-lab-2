@@ -6,8 +6,14 @@ on:
     paths:
       - 'backend/**'
       - 'frontend/**'
-      - '.github/workflows/docker-publish.yml'
+      - '.github/workflows/ci.yml'
   workflow_dispatch: {}   # يسمح بتشغيل الـ workflow يدويًا من تبويب Actions
+
+# Only one run at a time: the bump-manifests job below pushes a commit to
+# main, and two concurrent runs would race on that push.
+concurrency:
+  group: build-and-deploy
+  cancel-in-progress: false
 
 env:
   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -76,3 +82,74 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/task-manager-frontend:${{ steps.vars.outputs.sha_short }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ==========================================================================
+  #  GitOps handoff: pin the freshly built image digests into the manifests.
+  #
+  #  This is the job that makes the whole thing GitOps rather than "CI that also
+  #  deploys". CI never touches the cluster and holds no kubeconfig; it writes a
+  #  COMMIT, and Argo CD (which is the only thing with cluster credentials)
+  #  notices the new revision and rolls the Deployment. Consequences worth
+  #  spelling out:
+  #    * `git log -- k8s/production/apps` is the deployment history
+  #    * a rollback is `git revert`, not a kubectl command
+  #    * the manifests always name an immutable tag, never :latest, so what is
+  #      running is exactly what the repo says is running
+  #
+  #  [skip ci] on the commit message, plus the paths filter at the top of this
+  #  file, is what stops this from re-triggering itself forever.
+  # ==========================================================================
+  bump-manifests:
+    needs: [build-and-push-backend, build-and-push-frontend]
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to push the tag-bump commit back to main.
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Default checkout is at github.sha, so `git rev-parse --short HEAD`
+          # below yields the SAME value the build jobs used for their image
+          # tags. Do not change this to `ref: main` — if another commit landed
+          # meanwhile, the manifest would point at an image that was never built.
+          persist-credentials: true
+
+      - name: Extract short SHA
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Pin image tags in the Kubernetes manifests
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          SHA_SHORT: ${{ steps.vars.outputs.sha_short }}
+        run: |
+          set -euo pipefail
+          for app in backend frontend; do
+            manifest="k8s/production/apps/${app}/deployment.yaml"
+            test -f "$manifest" || { echo "missing $manifest"; exit 1; }
+            # The backreference keeps the original indentation of the image line.
+            sed -i -E "s#^([[:space:]]*image:[[:space:]]*).*/task-manager-${app}:.*#\1docker.io/${DOCKERHUB_USERNAME}/task-manager-${app}:${SHA_SHORT}#" "$manifest"
+            # Fail loudly if the sed matched nothing — a silent no-op here means
+            # Argo CD keeps deploying the previous image while CI reports green.
+            grep -q "task-manager-${app}:${SHA_SHORT}" "$manifest" || { echo "ERROR: could not rewrite the image line in $manifest"; exit 1; }
+          done
+          git --no-pager diff --stat
+
+      - name: Commit and push the bump
+        env:
+          SHA_SHORT: ${{ steps.vars.outputs.sha_short }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "Manifests already point at ${SHA_SHORT} — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add k8s/production/apps/backend/deployment.yaml k8s/production/apps/frontend/deployment.yaml
+          git commit -m "chore(deploy): pin app images to ${SHA_SHORT} [skip ci]"
+          # HEAD:main because the checkout is detached at github.sha. This fails
+          # loudly if main has moved, which is the correct outcome — re-running
+          # the workflow then picks up the newer commit.
+          git push origin HEAD:main

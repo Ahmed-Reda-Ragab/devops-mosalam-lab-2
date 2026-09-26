@@ -1,0 +1,76 @@
+# ============================================================================
+#  AppProject — the blast-radius fence around everything Argo CD is allowed to
+#  do on behalf of this repository.
+#
+#  Without a project, Applications land in the "default" project, which permits
+#  any repo, any cluster, any namespace and any resource kind. A compromised or
+#  simply mistaken commit could then create a ClusterRoleBinding in kube-system.
+#  The whitelists below are the whole point of this file.
+#
+#  Apply it once, by hand, before anything else:
+#     kubectl apply -f k8s/argocd/00-appproject.yaml
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: task-manager
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: task-manager
+  finalizers:
+    # Makes deleting the project block until its Applications are gone, instead
+    # of orphaning them.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Task Manager — apps, database and observability
+
+  # Only this repository. An Application pointing anywhere else is rejected.
+  sourceRepos:
+    - https://github.com/Ahmed-Reda-Ragab/devops-mosalam-lab-2.git
+
+  destinations:
+    # The root Application creates the five child Applications here. Without
+    # this entry Argo rejects its own app-of-apps with "destination is not
+    # permitted", which is a confusing first failure.
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+    - server: https://kubernetes.default.svc
+      namespace: tasks-app
+    - server: https://kubernetes.default.svc
+      namespace: tasks-db
+    - server: https://kubernetes.default.svc
+      namespace: monitoring
+    # The shared Gateway, its certificate and the HTTPS redirect route.
+    - server: https://kubernetes.default.svc
+      namespace: gateway
+    # Cluster-scoped objects (Namespace, ClusterRole, ClusterIssuer, ...) carry
+    # no namespace, which Argo represents as an empty string.
+    - server: https://kubernetes.default.svc
+      namespace: ""
+
+  # Exactly the cluster-scoped kinds this repo actually creates. Anything else
+  # (ValidatingWebhookConfiguration, CustomResourceDefinition, ...) is refused.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRoleBinding
+    - group: cert-manager.io
+      kind: ClusterIssuer
+    - group: storage.k8s.io
+      kind: StorageClass
+
+  # Namespaced resources: unrestricted, but only inside the four namespaces
+  # listed above.
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+  # Who may sync / override. Tighten this to your SSO groups in a real setup.
+  roles:
+    - name: read-only
+      description: View Applications and their resources, no sync
+      policies:
+        - p, proj:task-manager:read-only, applications, get, task-manager/*, allow

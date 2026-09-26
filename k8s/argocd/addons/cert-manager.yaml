@@ -1,0 +1,77 @@
+# ============================================================================
+#  OPTIONAL — cert-manager, managed by Argo CD as a Helm chart.
+#
+#  NOT synced by the root Application: k8s/argocd/addons/ is outside the
+#  root path on purpose, because whether the cluster add-ons belong in this
+#  repository is a real decision, not a default. Two valid answers:
+#
+#   a) Install them out of band (Helm or the provider add-on system) and let
+#      this repo manage only the workloads. Simplest; what most teams do first.
+#
+#   b) Apply this file once and let Argo CD own them too:
+#        kubectl apply -f k8s/argocd/addons/cert-manager.yaml
+#        kubectl apply -f k8s/argocd/addons/ingress-nginx.yaml
+#      Then the platform itself is in git, which is the real GitOps end state.
+#
+#  Either way the ClusterIssuers in k8s/production/platform/ are managed by the
+#  platform Application, and they will stay "issuer not ready" until
+#  cert-manager exists.
+#
+#  Note the project: these live in "default", not "task-manager" — the
+#  AppProject whitelist deliberately does not allow CRDs.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: cluster-addons
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.16.2
+    helm:
+      releaseName: cert-manager
+      values: |
+        # Installs the CRDs as part of the release. Without this you have to
+        # apply them separately, and Argo CD will report the ClusterIssuers as
+        # "unknown kind" until you do.
+        crds:
+          enabled: true
+          keep: true
+        replicaCount: 1
+        resources:
+          requests:
+            cpu: 20m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+        webhook:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+        cainjector:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+        prometheus:
+          enabled: true
+          servicemonitor:
+            enabled: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

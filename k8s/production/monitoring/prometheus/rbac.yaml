@@ -10,7 +10,7 @@
 #    nodes, nodes/proxy   -> scraping the kubelet's built-in cAdvisor endpoint
 #                            (this is what replaces the cadvisor container)
 #    pods                 -> the annotation-driven `kubernetes-pods` job
-#    services, endpoints  -> the ingress-nginx controller job
+#    services, endpoints  -> the hubble-metrics Service job
 #    /metrics             -> the API server's own metrics endpoint
 # ============================================================================
 apiVersion: v1

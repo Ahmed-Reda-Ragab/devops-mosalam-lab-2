@@ -1,0 +1,40 @@
+# ============================================================================
+#  alertmanager.yml — verbatim from alertmanager/alertmanager.yml. Nothing about
+#  routing or Telegram delivery is orchestrator-specific, so this is the one
+#  config file in the whole conversion that changed not at all.
+#
+#  NOTE ON EGRESS: Alertmanager must reach api.telegram.org. On a private
+#  cluster that means a NAT gateway (EKS/GKE) or outbound rules on the NSG
+#  (AKS). If notifications silently stop after the migration, that is the first
+#  thing to check — the AlertmanagerNotificationFailing rule will catch it.
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: alerting
+    app.kubernetes.io/part-of: task-manager
+data:
+  alertmanager.yml: |
+    route:
+      receiver: telegram
+      group_by: ['alertname']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    receivers:
+      - name: telegram
+        telegram_configs:
+          - bot_token_file: /run/secrets/telegram_token
+            chat_id: -5406600269
+            parse_mode: HTML
+            send_resolved: true
+            message: |-
+              {{ range .Alerts }}<b>[{{ .Labels.severity | toUpper }}] {{ .Labels.alertname }}</b> — {{ .Status | toUpper }}
+              {{ .Annotations.summary }}
+              {{ .Annotations.description }}
+              {{ end }}

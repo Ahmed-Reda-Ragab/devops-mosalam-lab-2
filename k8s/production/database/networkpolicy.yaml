@@ -117,12 +117,21 @@ spec:
         - protocol: TCP
           port: 11211
 ---
-# --- 5. Adminer is reachable only through the ingress controller.
-#        Change the namespace label if your controller lives elsewhere.
+# --- 5. Adminer.
+#        There is NO rule for the Gateway here, and that is not an omission.
+#        Cilium's Gateway Envoy runs in the host network namespace, so its
+#        traffic arrives with the reserved:host identity, which no Kubernetes
+#        NetworkPolicy selector can name and which Cilium allows by default
+#        (the kubelet's probes share that identity). The full reasoning is in
+#        the header of ../apps/networkpolicy.yaml.
+#
+#        What this rule DOES buy: nothing else in the cluster can reach the
+#        Adminer UI pod-to-pod, so a compromised pod in another namespace cannot
+#        use it as a database console.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: adminer-allow-ingress-controller
+  name: adminer-deny-pod-to-pod
   namespace: tasks-db
   labels:
     app.kubernetes.io/part-of: task-manager
@@ -132,14 +141,9 @@ spec:
       app.kubernetes.io/name: adminer
   policyTypes:
     - Ingress
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx
-      ports:
-        - protocol: TCP
-          port: 8080
+  # No ingress rules at all: default-deny for every pod source. The Gateway path
+  # stays open via Cilium's host exemption.
+  ingress: []
 ---
 # --- 6. Let Prometheus scrape anything in here that exposes metrics later
 #        (nothing does today; this saves a confusing debug session when you add

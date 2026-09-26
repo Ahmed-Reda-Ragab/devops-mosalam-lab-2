@@ -1,0 +1,173 @@
+# ============================================================================
+#  Cilium Helm values — the ACTUAL values for this cluster, plus the lines the
+#  Gateway API needs.
+#
+#  ⚠️  HOW CILIUM IS MANAGED HERE: with Helm DIRECTLY, not through RKE2.
+#  The RKE2 config says `cni: none`, so there is no rke2-cilium HelmChart object
+#  and therefore no HelmChartConfig to merge values into. Apply changes with:
+#
+#      helm repo add cilium https://helm.cilium.io/ && helm repo update
+#      helm upgrade --install cilium cilium/cilium \
+#        --version 1.19.4 \
+#        --namespace kube-system \
+#        -f k8s/cluster/cilium-values.yaml
+#
+#      kubectl -n kube-system rollout status ds/cilium --timeout=5m
+#
+#  This file is the successor to /root/01-cilium-values.yaml on rke2-k8s-01.
+#  Keep it in git and stop editing the copy on the node, or the two drift and
+#  nobody knows which one the cluster is actually running.
+#
+#  DIFF against what is on the node right now — only these are new:
+#      gatewayAPI.enabled            + gatewayAPI.hostNetwork.enabled
+#      envoy.enabled
+#      hubble.metrics.*              (so Prometheus has flow metrics to scrape)
+#      operator.prometheus / prometheus.enabled
+#  Check with:  cilium config view | grep -E 'enable-gateway-api|enable-envoy'
+# ============================================================================
+
+# ---- kube-proxy replacement -------------------------------------------------
+# Cilium handles Service load-balancing in eBPF instead of walking an iptables
+# chain per packet. Two reasons this matters beyond benchmarks:
+#   * iptables rule evaluation is O(number of Services). eBPF uses a hash map
+#     lookup: O(1).
+#   * ClusterIP translation happens at connect() time in the socket layer, so
+#     the packets leave the pod already addressed to the backend — no DNAT, no
+#     conntrack entry per connection, and the original source IP survives.
+# REQUIRED by the Cilium Gateway API controller. Pairs with
+# `disable-kube-proxy: true` in the RKE2 server config.
+kubeProxyReplacement: true
+
+# RKE2 never deployed kube-proxy, so Cilium cannot reach the API server through
+# the `kubernetes` Service — that Service is implemented BY Cilium, which is a
+# chicken-and-egg. It must be told directly.
+#
+# ⚠️  This is the CONTROL-network address of rke2-k8s-01, so node 1 is a single
+# point of failure for Cilium agents STARTING UP (an already-running agent keeps
+# working). Put a VIP (kube-vip / keepalived) in front of the three control IPs
+# and point this at it to remove that.
+k8sServiceHost: "172.16.0.20"
+k8sServicePort: "6443"
+
+# ---- Routing mode: native, not VXLAN ---------------------------------------
+# VXLAN wraps every pod packet in UDP (50 bytes of outer headers), costing
+# encap/decap CPU on both ends and shrinking the usable payload. Native routing
+# skips the tunnel: pod CIDRs are routed by the underlay, and
+# autoDirectNodeRoutes makes each node install a route to the pod CIDR of every
+# other node via its eth2 address.
+#
+# This works here only because all three nodes share one L2 segment on eth2
+# (172.17.0.0/18). It would NOT work across subnets without BGP — which is
+# exactly when people fall back to VXLAN.
+routingMode: native
+autoDirectNodeRoutes: true
+# Traffic to this CIDR is NOT masqueraded — it is genuinely routed, so pod to
+# pod keeps its real source IP, which is what makes Hubble and identity-based
+# policy useful.
+ipv4NativeRoutingCIDR: "10.42.0.0/16"
+
+# ---- IPAM -------------------------------------------------------------------
+# cluster-pool: the operator carves the /16 into a /22 per node (1024 addresses
+# each), and each agent allocates from its own slice with no coordination. That
+# is what makes autoDirectNodeRoutes cheap — one route per NODE, not per pod.
+ipam:
+  mode: cluster-pool
+  operator:
+    clusterPoolIPv4PodCIDRList:
+      - "10.42.0.0/16"
+    clusterPoolIPv4MaskSize: 22
+
+# ---- MTU --------------------------------------------------------------------
+# eth1 and eth2 run at 1400. If Cilium assumed 1500, every full-size packet
+# would be dropped or fragmented at the first hop, and the symptom is the worst
+# kind: small requests work, large responses hang. TLS handshakes complete and
+# THEN the connection stalls mid-body. You would blame the app for days.
+#
+# With native routing there is no tunnel overhead to subtract, so this is simply
+# the underlay MTU.
+MTU: 1400
+
+# ---- Which interfaces Cilium manages ---------------------------------------
+# All three, because each carries different traffic:
+#   eth0 192.168.32.x  NAT / internet — and where the lab DNAT delivers external
+#                      traffic, so the Gateway must be listening here
+#   eth1 172.16.0.x    control plane (API server, etcd)
+#   eth2 172.17.0.x    pod fabric — the one native routing actually uses
+devices:
+  - eth0
+  - eth1
+  - eth2
+
+nodePort:
+  # Pod-to-pod and NodePort traffic between nodes goes over the pod fabric, not
+  # over the control network (which must stay clear for etcd) and not over NAT.
+  directRoutingDevice: eth2
+
+loadBalancer:
+  mode: snat
+
+# ---- L7 proxy + Gateway API -------------------------------------------------
+# l7Proxy backs both the Gateway API data path and L7 CiliumNetworkPolicies
+# (the /api key gate in k8s/production/apps/routes/ is one).
+l7Proxy: true
+
+gatewayAPI:
+  # NEW. Requires the Gateway API CRDs to be installed FIRST — Cilium does not
+  # ship them, and without them this controller starts, finds no CRDs, creates
+  # no GatewayClass, and logs nothing that points at the cause.
+  #     ./k8s/cluster/gateway-api-crds.sh
+  enabled: true
+
+  # NEW. Envoy binds the listener ports of each Gateway directly on every node,
+  # instead of Cilium creating a LoadBalancer Service for it.
+  #
+  # This is the right choice for this lab: the external IP is DNAT'd to the node
+  # addresses, so traffic arrives at <nodeIP>:443 and something has to be
+  # listening there. A LoadBalancer IP from LB-IPAM would never receive it,
+  # because the DNAT targets the node, not the LB IP.
+  #
+  # Consequence: :80 and :443 are occupied on all three nodes. Already fine
+  # here, because the RKE2 config disables rke2-ingress-nginx, which wanted the
+  # same ports.
+  hostNetwork:
+    enabled: true
+
+# NEW. Run Envoy as its own DaemonSet rather than inside cilium-agent. Upgrading
+# the agent then does not restart every L7 proxy, and the memory Envoy uses
+# shows up as its own container instead of inflating the agent.
+envoy:
+  enabled: true
+
+# ---- Observability ----------------------------------------------------------
+# Hubble is the reason to run Cilium rather than a simpler CNI: flow-level
+# visibility into which identity talked to which, and whether policy allowed it,
+# with no sidecar.
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+  ui:
+    enabled: true
+  # NEW — the metrics section. Without it Hubble has a UI but exports nothing,
+  # so the `hubble` scrape job in
+  # k8s/production/monitoring/prometheus/configmap.yaml finds no target and the
+  # HubbleDown alert fires.
+  metrics:
+    enabled:
+      - dns
+      - drop            # hubble_drop_total: WHY a NetworkPolicy dropped traffic
+      - tcp
+      - flow
+      - port-distribution
+      - icmp
+      - httpV2:exemplars=true;labelsContext=source_namespace,source_workload,destination_namespace,destination_workload,traffic_direction
+    serviceMonitor:
+      # We scrape by Service discovery, not with Prometheus Operator CRDs.
+      enabled: false
+
+# NEW — so the cilium and cilium-operator scrape jobs have something to read.
+operator:
+  prometheus:
+    enabled: true
+prometheus:
+  enabled: true

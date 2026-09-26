@@ -1,0 +1,121 @@
+# ============================================================================
+#  Subdomain -> canonical path redirects.
+#
+#  Compose did this with three Traefik redirectregex middlewares:
+#     regex=^https://grafana\.el-programmer\.click/?(.*)
+#     replacement=https://el-programmer.click/grafana/${1}
+#     permanent=false                                        -> 302
+#
+#  The Ingress version needed an nginx configuration-snippet with a raw
+#  "return 302 ... $request_uri", because the only annotation available
+#  (permanent-redirect) sends EVERY request to one fixed URL — a deep link like
+#  grafana.el-programmer.click/d/abc/my-dash would land on the Grafana home page.
+#  That snippet also required allow-snippet-annotations=true on the controller,
+#  a cluster-wide flag, just to express a redirect.
+#
+#  RequestRedirect with ReplacePrefixMatch is CORE Gateway API and does it
+#  exactly: the matched prefix "/" is replaced with "/grafana", so
+#     grafana.el-programmer.click/d/abc  ->  el-programmer.click/grafana/d/abc
+#  Path preserved, no regex, no capture group, no vendor flag, and the API server
+#  validates the whole thing.
+#
+#  Why redirect at all: all three serve from a sub-path (serve_from_sub_path /
+#  --web.route-prefix), so none of them can serve at the root of a subdomain.
+#  The subdomains exist purely as memorable entry points.
+#
+#  statusCode is 302, matching Traefik's permanent=false. Gateway API only allows
+#  301 or 302 here; prefer 302 while the hostnames might still change, because a
+#  301 is cached by browsers and is genuinely hard to undo.
+# ============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana-subdomain-redirect
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/part-of: task-manager
+spec:
+  parentRefs:
+    - name: main
+      namespace: gateway
+      kind: Gateway
+      group: gateway.networking.k8s.io
+      sectionName: https
+  hostnames:
+    - grafana.el-programmer.click
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            hostname: el-programmer.click
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /grafana
+            statusCode: 302
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prometheus-subdomain-redirect
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: task-manager
+spec:
+  parentRefs:
+    - name: main
+      namespace: gateway
+      kind: Gateway
+      group: gateway.networking.k8s.io
+      sectionName: https
+  hostnames:
+    - prometheus.el-programmer.click
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            hostname: el-programmer.click
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /prometheus
+            statusCode: 302
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: alertmanager-subdomain-redirect
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/part-of: task-manager
+spec:
+  parentRefs:
+    - name: main
+      namespace: gateway
+      kind: Gateway
+      group: gateway.networking.k8s.io
+      sectionName: https
+  hostnames:
+    - alertmanager.el-programmer.click
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            hostname: el-programmer.click
+            path:
+              type: ReplacePrefixMatch
+              replacePrefixMatch: /alertmanager
+            statusCode: 302

@@ -1,0 +1,54 @@
+# ============================================================================
+#  :80 -> :443 for every hostname. Replaces Traefik
+#     --entrypoints.web.http.redirections.entrypoint.to=websecure
+#  and the per-Ingress nginx.ingress.kubernetes.io/ssl-redirect annotation.
+#
+#  RequestRedirect is a CORE Gateway API filter. That is the point worth noticing:
+#  the same behaviour needed a vendor annotation on every single Ingress object,
+#  and here it is one conformant resource that any Gateway implementation honours.
+#
+#  ── DOES THIS BREAK ACME? NO, AND HERE IS WHY ──────────────────────────────
+#  This is the classic trap: a blanket :80 redirect swallows the HTTP-01
+#  challenge and certificates never issue. It does not happen here because of
+#  Gateway API rule precedence. cert-manager's solver HTTPRoute matches the
+#  specific path /.well-known/acme-challenge/<token>, and the spec orders
+#  matches across ALL routes on a listener by specificity: an exact or longer
+#  path match wins over a shorter one. The rule below has no path match at all,
+#  which defaults to PathPrefix "/" — the least specific match possible. So the
+#  challenge route always wins while it exists.
+#
+#  Verify rather than trust:
+#     kubectl -n gateway get httproute       # a cm-acme-http-solver-* appears
+#                                            # during issuance, then disappears
+# ============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: https-redirect
+  namespace: gateway
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  parentRefs:
+    - name: main
+      namespace: gateway
+      kind: Gateway
+      group: gateway.networking.k8s.io
+      # Attach to the plain-HTTP listener ONLY. Without sectionName the route
+      # would also bind to the https listener and redirect HTTPS to itself.
+      sectionName: http
+  hostnames:
+    - el-programmer.click
+    - load.el-programmer.click
+    - adminer.el-programmer.click
+    - grafana.el-programmer.click
+    - prometheus.el-programmer.click
+    - alertmanager.el-programmer.click
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            # 301, matching Traefik. Browsers cache it, so get the hostnames
+            # right the first time — a wrong 301 is sticky.
+            statusCode: 301

@@ -1,0 +1,74 @@
+# ============================================================================
+#  Grafana, Prometheus and Alertmanager on el-programmer.click.
+#
+#  Three Ingress objects collapse into three RULES on one HTTPRoute. None of
+#  them needs a rewrite: Grafana runs with GF_SERVER_SERVE_FROM_SUB_PATH=true and
+#  the other two with --web.route-prefix, so all three already expect their
+#  prefix — exactly as in the Compose/Traefik setup.
+#
+#  ⚠️  PROMETHEUS AND ALERTMANAGER HAVE NO AUTHENTICATION.
+#  Same as the Compose stack. Prometheus exposes the full metric history of the
+#  system, including every URL path your users hit. Alertmanager is worse: anyone
+#  who reaches that UI can SILENCE your alerts, and you would never know why the
+#  Telegram messages stopped.
+#
+#  Gateway API core has no basic-auth filter — that was an Ingress annotation and
+#  it is gone. The options here are:
+#    a) an L7 CiliumNetworkPolicy allowing only a known header/source, the same
+#       pattern as ../../apps/routes/ciliumnetworkpolicy-api-key.yaml.optional;
+#    b) restrict by source IP with a CiliumNetworkPolicy fromCIDR, which is the
+#       closest equivalent to the old Traefik ip-whitelist middleware;
+#    c) delete these two rules and use kubectl port-forward.
+#  Grafana has its own login, so it is the one that is genuinely fine to expose —
+#  once you have changed the admin password from the Secret default.
+# ============================================================================
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: observability
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  parentRefs:
+    - name: main
+      namespace: gateway
+      kind: Gateway
+      group: gateway.networking.k8s.io
+      sectionName: https
+  hostnames:
+    - el-programmer.click
+
+  rules:
+    # ---- /grafana ---------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /grafana
+      backendRefs:
+        - name: grafana
+          port: 3000
+          kind: Service
+          group: ""
+
+    # ---- /prometheus ------------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /prometheus
+      backendRefs:
+        - name: prometheus
+          port: 9090
+          kind: Service
+          group: ""
+
+    # ---- /alertmanager ----------------------------------------------------
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /alertmanager
+      backendRefs:
+        - name: alertmanager
+          port: 9093
+          kind: Service
+          group: ""

@@ -1,21 +1,26 @@
 # ============================================================================
-#  cert-manager ClusterIssuer — replaces Traefik's built-in ACME resolver
-#  ("certificatesresolvers.le" in compose/docker-compose.apps.yml).
+#  cert-manager ClusterIssuer — replaces Traefik's built-in ACME resolver.
 #
-#  Same challenge type as before: HTTP-01, solved by the ingress-nginx
-#  controller on :80. The prerequisites are unchanged:
-#    1) DNS  el-programmer.click  ->  the ingress LoadBalancer address
-#    2) port 80 reachable from the internet
+#  HTTP-01 as before, but solved through the GATEWAY instead of an Ingress.
+#  cert-manager's gatewayHTTPRoute solver creates a temporary HTTPRoute that
+#  attaches to the Gateway named in parentRefs and serves
+#  /.well-known/acme-challenge/... for the duration of the challenge, then
+#  deletes it. The Ingress-based solver (solvers[].http01.ingress) would create
+#  an Ingress object, which nothing in this cluster serves any more.
 #
-#  REQUIRES cert-manager to be installed in the cluster first:
-#    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
-#  (or manage it as its own Argo CD Application — see k8s/README.md).
+#  REQUIRES:
+#    * cert-manager >= v1.15 with the Gateway API feature gate. It is OFF by
+#      default — the flag is --feature-gates=ExperimentalGatewayAPISupport=true
+#      on the cert-manager controller (Helm: featureGates). Without it this
+#      issuer silently never solves a challenge.
+#    * the Gateway in k8s/production/gateway/ to exist and have an HTTP listener
+#      on :80 that allows Routes from the cert-manager namespace.
 #
-#  Two issuers are defined:
+#  Two issuers:
 #    letsencrypt-staging -> use while testing. Untrusted cert, but NO rate
-#                           limits, so a broken DNS/ingress setup costs nothing.
+#                           limits, so a broken DNS setup costs nothing.
 #    letsencrypt-prod    -> the real thing. Only 5 duplicate certs per domain
-#                           per week, so switch to it once staging succeeds.
+#                           per week, so switch once staging has succeeded.
 # ============================================================================
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -29,8 +34,18 @@ spec:
       name: letsencrypt-staging-account-key
     solvers:
       - http01:
-          ingress:
-            ingressClassName: nginx
+          gatewayHTTPRoute:
+            # The challenge HTTPRoute attaches here. Must match the Gateway in
+            # k8s/production/gateway/gateway.yaml exactly, including namespace.
+            parentRefs:
+              - name: main
+                namespace: gateway
+                kind: Gateway
+                group: gateway.networking.k8s.io
+                # The plain-HTTP listener. ACME validation is HTTP-only by
+                # design (the whole point is that you have no cert yet), so it
+                # must NOT be sent to the https listener.
+                sectionName: http
 ---
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
@@ -44,5 +59,10 @@ spec:
       name: letsencrypt-prod-account-key
     solvers:
       - http01:
-          ingress:
-            ingressClassName: nginx
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: main
+                namespace: gateway
+                kind: Gateway
+                group: gateway.networking.k8s.io
+                sectionName: http

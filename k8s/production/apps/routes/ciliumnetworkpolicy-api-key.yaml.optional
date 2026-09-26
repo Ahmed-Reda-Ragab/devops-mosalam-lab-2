@@ -1,0 +1,128 @@
+# ============================================================================
+#  The /api key gate, enforced at L7 in the Cilium datapath.
+#
+#  ⚠️⚠️  THIS FILE IS .optional — ARGO CD DOES NOT SYNC IT. DELIBERATELY.
+#
+#  WHY IT IS STAGED AND NOT LIVE
+#  A CiliumNetworkPolicy that selects an endpoint makes that endpoint DEFAULT
+#  DENY for the selected direction. If the allow-list below is wrong in any
+#  detail — the wrong source entity for the Gateway's Envoy, a path regex that
+#  does not match, a probe path I forgot — the backend stops answering its own
+#  liveness probe, the kubelet restarts every pod, and /api goes down hard. That
+#  is strictly worse than the hole it closes.
+#
+#  I could not test this against your cluster, so it ships disabled. Enable it
+#  in three steps, in this order:
+#
+#    1) Apply it BY HAND and watch, with a rollback ready:
+#         kubectl apply -f ciliumnetworkpolicy-api-key.yaml.optional
+#         kubectl -n tasks-app get pods -w          # no restarts expected
+#         kubectl -n tasks-app logs -l app.kubernetes.io/name=backend --tail=20
+#
+#    2) Prove all four paths behave:
+#         curl -o /dev/null -w 'no key    -> %{http_code}\n'  https://el-programmer.click/api/tasks
+#         # expect 403
+#         curl -o /dev/null -w 'with key  -> %{http_code}\n' \
+#              -H 'X-API-KEY: asxijomckasmksmlcmslcwefpwokww3309kml' \
+#              https://el-programmer.click/api/tasks
+#         # expect 200
+#         curl -o /dev/null -w 'pro-api   -> %{http_code}\n'  https://el-programmer.click/pro-api/tasks
+#         # expect 200 — the Gateway injects the key for this route
+#         kubectl -n tasks-app get pods -l app.kubernetes.io/name=backend
+#         # expect READY 1/1 and RESTARTS unchanged: the kubelet probes still pass
+#
+#       Watch the denies as they happen:
+#         kubectl -n kube-system exec ds/cilium -- \
+#           hubble observe --namespace tasks-app --verdict DROPPED --type l7 -f
+#
+#    3) Only then bring it under GitOps:
+#         git mv ciliumnetworkpolicy-api-key.yaml.optional \
+#                ciliumnetworkpolicy-api-key.yaml
+#         git commit && git push
+#
+#    Emergency rollback at any point:
+#         kubectl -n tasks-app delete ciliumnetworkpolicy backend-api-key
+#
+#  WHY THIS INSTEAD OF WHAT WE HAD
+#  The Ingress version used an nginx configuration-snippet, which is exactly the
+#  kind of un-validatable vendor escape hatch Gateway API exists to remove.
+#  Gateway API core has no auth filter, and Cilium has no auth policy, so the
+#  enforcement point moves from the proxy to the pod's own datapath. Cilium's L7
+#  HTTP rules can match a header VALUE, which is enough.
+#
+#  WHAT THIS STILL DOES NOT FIX
+#    * The key is STILL plaintext in git — it just moved files. The end state is
+#      an API_KEY env var from the backend-secrets Secret checked by a FastAPI
+#      dependency; then nothing sensitive is in any manifest. Rotate this key.
+#    * Traefik's removeHeadersOnSuccess stripped X-API-KEY before the app saw it.
+#      It cannot be stripped here, because the pod's datapath is where the check
+#      happens. The header now reaches the app, which ignores it.
+#    * Rate limiting is still gone. Cilium has no equivalent. See the header of
+#      httproute-frontend-and-api.yaml.
+# ============================================================================
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: backend-api-key
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: task-manager
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+
+  ingress:
+    # ---- 1. From the node: the Gateway's Envoy AND the kubelet -------------
+    # With gatewayAPI.hostNetwork.enabled=true, Cilium's Envoy runs in the host
+    # network namespace, so Gateway traffic arrives with the reserved:host
+    # identity. The kubelet's probes come from the same identity — which is why
+    # /health and /metrics MUST be allowed here unconditionally. Forget them and
+    # the liveness probe fails on every pod.
+    # remote-node covers a probe or Gateway hop from one of the other two nodes.
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+          rules:
+            http:
+              # kubelet startup + liveness probe
+              - method: GET
+                path: "^/metrics$"
+              # kubelet readiness probe
+              - method: GET
+                path: "^/health$"
+              # The actual gate. Cilium matches the header value exactly; a
+              # missing or wrong key matches no rule and Envoy returns 403 —
+              # the same status the Traefik plugin returned.
+              - path: "^/api(/.*)?$"
+                headers:
+                  - "X-API-KEY: asxijomckasmksmlcmslcwefpwokww3309kml"
+
+    # ---- 2. Locust ---------------------------------------------------------
+    # Load tests hit the Service directly, in-cluster, and bypass the gate by
+    # design (that is also true today — the nginx snippet only ran at the edge).
+    # No L7 rules, so this is a plain L3/L4 allow.
+    - fromEndpoints:
+        - matchLabels:
+            app.kubernetes.io/name: locust
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP
+
+    # ---- 3. Prometheus -----------------------------------------------------
+    # Scrapes /metrics pod-to-pod. io.kubernetes.pod.namespace is how Cilium
+    # expresses a cross-namespace endpoint selector.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+            app.kubernetes.io/name: prometheus
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP

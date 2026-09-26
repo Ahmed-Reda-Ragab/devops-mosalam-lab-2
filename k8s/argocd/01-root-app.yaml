@@ -1,0 +1,58 @@
+# ============================================================================
+#  Root Application — the "app of apps".
+#
+#  This is the ONLY thing you apply by hand after the AppProject. It watches
+#  k8s/argocd/applications/ and creates the five child Applications found there,
+#  which in turn sync the actual manifests. From that point on, adding a
+#  component to the platform is a commit, not a kubectl command.
+#
+#     kubectl apply -f k8s/argocd/00-appproject.yaml
+#     kubectl apply -f k8s/argocd/01-root-app.yaml
+#     # nothing else, ever
+#
+#  WHY app-of-apps AND NOT ONE BIG APPLICATION:
+#    * ordering — sync waves on the children bring namespaces up before the
+#      database, the database before the apps, the apps before monitoring;
+#    * blast radius — a broken monitoring manifest leaves the app Application
+#      healthy and synced instead of blocking the whole tree;
+#    * readable status — "database: Synced, apps: OutOfSync" tells you where to
+#      look; one Application with 120 resources does not.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: task-manager-root
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: task-manager
+  finalizers:
+    # Cascade: deleting the root deletes the children, which delete their
+    # resources. Remove this line if you want deletes to stop at the root.
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: task-manager
+  source:
+    repoURL: https://github.com/Ahmed-Reda-Ragab/devops-mosalam-lab-2.git
+    targetRevision: main
+    path: k8s/argocd/applications
+    directory:
+      recurse: false
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      # Remove child Applications when their file is deleted from git.
+      prune: true
+      # Revert anything changed with kubectl. This is what makes git the source
+      # of truth rather than a suggestion.
+      selfHeal: true
+    syncOptions:
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10

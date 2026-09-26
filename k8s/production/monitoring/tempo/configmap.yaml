@@ -1,0 +1,87 @@
+# ============================================================================
+#  tempo.yml — ported from tempo/tempo.yml. One change: the remote_write URL
+#  now carries the in-cluster FQDN of the Prometheus Service.
+#
+#  Ingest path:
+#    backend --(OTLP gRPC)--> otel-collector --(OTLP gRPC)--> tempo
+#  (Traefik used to be a second producer at the edge; Cilium's Gateway Envoy has
+#  no tracing toggle, so the backend is now the trace root.)
+# ============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: tempo
+    app.kubernetes.io/component: traces
+    app.kubernetes.io/part-of: task-manager
+data:
+  tempo.yaml: |
+    server:
+      http_listen_port: 3200   # API + /metrics; this is what Grafana talks to
+      grpc_listen_port: 9095
+
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+
+    ingester:
+      # Cut a block every 5m so freshly received traces become searchable
+      # quickly (the default is 30m, which feels "broken" on a small stack).
+      max_block_duration: 5m
+
+    compactor:
+      compaction:
+        # Local disk: keep 48h of traces. Traces are far heavier than metrics,
+        # so retention is deliberately short.
+        block_retention: 48h
+
+    # --- metrics_generator ---------------------------------------------------
+    # Turns spans into Prometheus series *as they are ingested*:
+    #   * span-metrics   -> traces_spanmetrics_* (RED: rate/errors/duration per
+    #                       service+route) with exemplars pointing at real traces
+    #   * service-graphs -> traces_service_graph_*, which powers Grafana's
+    #                       Service Map (who calls whom, at what latency)
+    #   * local-blocks   -> required for TraceQL metrics queries in Grafana
+    # It remote-writes into Prometheus, which therefore needs
+    #   --web.enable-remote-write-receiver   (and --enable-feature=exemplar-storage
+    # for the exemplar links). Both are set on the Prometheus StatefulSet.
+    metrics_generator:
+      registry:
+        external_labels:
+          source: tempo
+      storage:
+        path: /var/tempo/generator/wal
+        remote_write:
+          # Prometheus runs behind --web.route-prefix=/prometheus, so the write
+          # endpoint carries that prefix too.
+          - url: http://prometheus.monitoring.svc.cluster.local:9090/prometheus/api/v1/write
+            send_exemplars: true
+      traces_storage:
+        path: /var/tempo/generator/traces
+      processor:
+        local_blocks:
+          flush_to_storage: true
+
+    storage:
+      trace:
+        backend: local          # swap for s3/gcs when this outgrows one PVC
+        wal:
+          path: /var/tempo/wal
+        local:
+          path: /var/tempo/blocks
+
+    # Per-tenant limits. Single-tenant here, so these are the defaults for all.
+    overrides:
+      defaults:
+        metrics_generator:
+          processors:
+            - service-graphs
+            - span-metrics
+            - local-blocks

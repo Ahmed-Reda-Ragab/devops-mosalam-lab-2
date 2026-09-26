@@ -1,0 +1,15 @@
+# Never commit a filled-in Secret. Only the *.yaml.example templates belong in
+# git; the real values come from `kubectl create secret`, Sealed Secrets or
+# External Secrets Operator. See production/database/secrets.yaml.example.
+secrets.yaml
+*-secret.yaml
+*-secrets.yaml
+
+# ...but DO commit the sealed/encrypted forms — that is the whole point of them.
+!sealed-secret*.yaml
+!*.sealed.yaml
+!external-secret*.yaml
+
+# Local kubectl scratch
+kubeconfig
+*.kubeconfig
