@@ -5,11 +5,11 @@ COPY style.css /usr/share/nginx/html/
 COPY app.js /usr/share/nginx/html/
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-RUN addgroup -S -g 10001 app \
-	&& adduser -S -D -H -u 10001 -G app app \
-	&& chown -R 10001:10001 /usr/share/nginx/html /var/cache/nginx
+RUN addgroup -S -g 1001 app \
+	&& adduser -S -D -H -u 1001 -G app app \
+	&& chown -R 1001:1001 /usr/share/nginx/html /var/cache/nginx
 
-USER 10001:10001
+USER 1001:1001
 
 EXPOSE 8080
 

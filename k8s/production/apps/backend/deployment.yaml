@@ -56,9 +56,9 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       securityContext:
-        runAsUser: 10001
-        runAsGroup: 10001
-        fsGroup: 10001
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
