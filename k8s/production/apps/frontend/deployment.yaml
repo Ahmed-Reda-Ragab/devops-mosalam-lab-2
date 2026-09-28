@@ -54,7 +54,7 @@ spec:
               app.kubernetes.io/name: frontend
       containers:
         - name: frontend
-          image: docker.io/elprogrammer1/task-manager-frontend:0ae85b8
+          image: docker.io/elprogrammer1/task-manager-frontend:b875c0e
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
