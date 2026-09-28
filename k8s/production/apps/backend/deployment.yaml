@@ -75,7 +75,7 @@ spec:
               app.kubernetes.io/name: backend
       containers:
         - name: backend
-          image: docker.io/elprogrammer1/task-manager-backend:latest
+          image: docker.io/elprogrammer1/task-manager-backend:0ae85b8
           imagePullPolicy: IfNotPresent
           runAsUser: 10001
           runAsGroup: 10001
