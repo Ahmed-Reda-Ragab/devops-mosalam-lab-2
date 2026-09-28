@@ -38,6 +38,13 @@ spec:
         app.kubernetes.io/component: web
         app.kubernetes.io/part-of: task-manager
     spec:
+      securityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -51,7 +58,7 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 80
+              containerPort: 8080
               protocol: TCP
           readinessProbe:
             httpGet:
@@ -70,17 +77,9 @@ spec:
             failureThreshold: 3
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-              # nginx's master process binds :80, a privileged port.
-              add: ["NET_BIND_SERVICE"]
-            # NOT read-only, deliberately. The stock nginx entrypoint rewrites
-            # /etc/nginx/conf.d/default.conf (the ipv6-by-default script) and
-            # writes /var/run/nginx.pid + /var/cache/nginx at startup; a
-            # read-only root makes the container fail to start. Switching to
-            # nginxinc/nginx-unprivileged would let you turn this on — that is
-            # a Dockerfile change, so out of scope for this conversion.
-            readOnlyRootFilesystem: false
           resources:
             requests:
               cpu: 50m
@@ -88,3 +87,13 @@ spec:
             limits:
               cpu: 250m
               memory: 128Mi
+          volumeMounts:
+            - name: nginx-tmp
+              mountPath: /tmp
+            - name: nginx-cache
+              mountPath: /var/cache/nginx
+      volumes:
+        - name: nginx-tmp
+          emptyDir: {}
+        - name: nginx-cache
+          emptyDir: {}

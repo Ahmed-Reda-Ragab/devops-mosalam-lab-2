@@ -56,10 +56,9 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       securityContext:
-        # The image already creates and switches to an unprivileged "appuser".
-        # Declaring it here means the kubelet REFUSES to start the pod if a
-        # future image change reintroduces root, instead of silently running as
-        # root.
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
@@ -77,8 +76,6 @@ spec:
         - name: backend
           image: docker.io/elprogrammer1/task-manager-backend:latest
           imagePullPolicy: IfNotPresent
-          runAsUser: 10001
-          runAsGroup: 10001
           envFrom:
             - configMapRef:
                 name: backend-config
@@ -150,6 +147,6 @@ spec:
         - name: secrets
           secret:
             secretName: backend-secrets
-            defaultMode: 0400
+            defaultMode: 0440
         - name: tmp
           emptyDir: {}

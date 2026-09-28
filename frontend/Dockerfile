@@ -5,6 +5,13 @@ COPY style.css /usr/share/nginx/html/
 COPY app.js /usr/share/nginx/html/
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-EXPOSE 80
+RUN addgroup -S -g 10001 app \
+	&& adduser -S -D -H -u 10001 -G app app \
+	&& chown -R 10001:10001 /usr/share/nginx/html /var/cache/nginx
 
-CMD ["nginx", "-g", "daemon off;"]
+USER 10001:10001
+
+EXPOSE 8080
+
+ENTRYPOINT ["nginx"]
+CMD ["-g", "daemon off; pid /tmp/nginx.pid;"]
