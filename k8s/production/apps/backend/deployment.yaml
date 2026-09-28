@@ -77,6 +77,8 @@ spec:
         - name: backend
           image: docker.io/elprogrammer1/task-manager-backend:latest
           imagePullPolicy: IfNotPresent
+          runAsUser: 10001
+          runAsGroup: 10001
           envFrom:
             - configMapRef:
                 name: backend-config

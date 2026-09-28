@@ -23,14 +23,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Create an unprivileged user to run the app. No apt packages are installed:
 # the healthcheck uses Python's stdlib (already in the image) instead of curl,
 # so there's no Debian package version to pin against a rolling base image.
-RUN groupadd --system appuser \
-    && useradd --system --gid appuser --home-dir /app --no-create-home appuser
+RUN groupadd --system --gid 10001 app \
+    &&  useradd --system \
+        --uid 10001 \
+        --gid 10001 \
+        --home-dir /app \
+        --no-create-home \
+        app
 
 WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 COPY ./app ./app
 
-USER appuser
+USER 10001
 
 EXPOSE 8000
 
