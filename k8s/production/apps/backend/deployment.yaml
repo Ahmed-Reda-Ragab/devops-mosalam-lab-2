@@ -74,7 +74,7 @@ spec:
               app.kubernetes.io/name: backend
       containers:
         - name: backend
-          image: docker.io/elprogrammer1/task-manager-backend:0ae85b8
+          image: docker.io/elprogrammer1/task-manager-backend:b875c0e
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
