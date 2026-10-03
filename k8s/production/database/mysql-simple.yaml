@@ -88,6 +88,12 @@ spec:
         app.kubernetes.io/component: database
         app.kubernetes.io/part-of: task-manager
     spec:
+      # MySQL never talks to the Kubernetes API, so it gets no token. This is
+      # also REQUIRED here: in the mysql image /var/run -> /run, so the token
+      # mount (/var/run/secrets/kubernetes.io/serviceaccount) would have to
+      # create a directory inside the read-only Secret mounted at /run/secrets,
+      # and runc fails with "read-only file system".
+      automountServiceAccountToken: false
       # The image drops to the mysql user (uid 999) after preparing the data
       # dir; fsGroup gives it write access to a freshly provisioned PV.
       securityContext:

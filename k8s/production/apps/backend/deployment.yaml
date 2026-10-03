@@ -55,6 +55,11 @@ spec:
         prometheus.io/port: "8000"
         prometheus.io/path: "/metrics"
     spec:
+      # The backend never talks to the Kubernetes API, so it gets no token.
+      # Also REQUIRED: in python:*-slim /var/run -> /run, so the token mount
+      # would have to create a directory inside the read-only Secret at
+      # /run/secrets, and runc fails with "read-only file system".
+      automountServiceAccountToken: false
       securityContext:
         runAsUser: 1001
         runAsGroup: 1001
