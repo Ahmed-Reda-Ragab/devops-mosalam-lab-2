@@ -17,3 +17,10 @@ traefik/acme.json
 traefik/traefik.yml
 .ruff_cache
 .pytest_cache
+/docs
+/docs-rke2
+/rke2-cilium-private-cloud
+/scripts
+/README.md
+/SCALING.md
+/task4
