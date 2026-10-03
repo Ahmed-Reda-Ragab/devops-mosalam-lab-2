@@ -1,0 +1,229 @@
+# ============================================================================
+#  mysql-simple — ONE MySQL instance in ONE file, for a small server.
+#
+#  No replica, no ProxySQL. The backend connects straight to:
+#      mysql-simple.tasks-db.svc.cluster.local:3306
+#
+#  Reuses what already exists in this folder, nothing new to create:
+#    * Secret    mysql-secrets  -> mysql_root_password, db_password
+#    * ConfigMap db-config      -> DB_DATABASE (appdb), DB_USERNAME (appuser)
+#
+#  Four objects: init ConfigMap, Service, StatefulSet, NetworkPolicy.
+# ============================================================================
+
+# --- 1. Schema — runs ONCE, on first boot with an empty PVC -----------------
+#        The backend does not create its tables itself, so this has to be here.
+#        The app user and its grants are created by the image's entrypoint from
+#        MYSQL_USER / MYSQL_PASSWORD_FILE, no script needed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-simple-init
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-simple
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: task-manager
+data:
+  00-schema.sql: |
+    CREATE DATABASE IF NOT EXISTS appdb;
+    USE appdb;
+
+    CREATE TABLE IF NOT EXISTS tasks (
+      id BIGINT AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      description TEXT NULL,
+      status ENUM('pending','completed') NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    );
+
+    INSERT INTO tasks (name, description, status) VALUES
+    ('Buy groceries', 'Milk, eggs, bread, and coffee', 'pending'),
+    ('Read project documentation', 'Review the requirements and design decisions', 'completed'),
+    ('Update deployment scripts', 'Prepare Kubernetes manifests and GitOps wiring', 'pending'),
+    ('Schedule team meeting', 'Book conference room for planning session', 'pending'),
+    ('Clean workspace', 'Organize files and remove old containers', 'completed');
+---
+# --- 2. Headless Service — the StatefulSet's governing Service --------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-simple
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-simple
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: task-manager
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: mysql-simple
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+      protocol: TCP
+---
+# --- 3. StatefulSet — one pod, one PVC --------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-simple
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/name: mysql-simple
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: task-manager
+spec:
+  serviceName: mysql-simple
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mysql-simple
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mysql-simple
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: task-manager
+    spec:
+      # The image drops to the mysql user (uid 999) after preparing the data
+      # dir; fsGroup gives it write access to a freshly provisioned PV.
+      securityContext:
+        fsGroup: 999
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          # Tuning as flags instead of a my.cnf ConfigMap, to keep it one file.
+          args:
+            # MySQL 8 enables the binlog by default; with no replica it is only
+            # disk and IO overhead.
+            - --skip-log-bin
+            # Small server: 128M is plenty for the tasks table, and
+            # performance_schema alone costs ~200MB of RSS.
+            - --innodb-buffer-pool-size=128M
+            - --performance-schema=OFF
+            - --skip-name-resolve
+          env:
+            - name: MYSQL_ROOT_PASSWORD_FILE
+              value: /run/secrets/mysql_root_password
+            - name: MYSQL_PASSWORD_FILE
+              value: /run/secrets/db_password
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: db-config
+                  key: DB_DATABASE
+            - name: MYSQL_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: db-config
+                  key: DB_USERNAME
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets
+              readOnly: true
+          # First boot runs the schema script; give it up to 5 minutes before
+          # liveness is allowed to restart the container.
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$(cat /run/secrets/mysql_root_password)" --silent
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$(cat /run/secrets/mysql_root_password)" --silent
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$(cat /run/secrets/mysql_root_password)" --silent
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              # Only requests count for scheduling, so this headroom is free
+              # until MySQL actually uses it.
+              cpu: "1"
+              memory: 768Mi
+      volumes:
+        - name: init
+          configMap:
+            name: mysql-simple-init
+        - name: secrets
+          secret:
+            secretName: mysql-secrets
+            defaultMode: 0440
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # Unset -> the cluster's default StorageClass. Pin it once one exists:
+        #   storageClassName: longhorn
+        resources:
+          requests:
+            storage: 5Gi
+---
+# --- 4. NetworkPolicy — needed, not optional --------------------------------
+#        networkpolicy.yaml in this folder default-denies ingress to every pod
+#        in tasks-db, and its MySQL rule only names mysql-primary/mysql-replica.
+#        Without this, nothing could connect to mysql-simple.
+#        namespaceSelector + podSelector in ONE item = AND: backend pods in
+#        tasks-app only, not Locust or the frontend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mysql-simple-allow-clients
+  namespace: tasks-db
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mysql-simple
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: tasks-app
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: adminer
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mysql-backup
+      ports:
+        - protocol: TCP
+          port: 3306

@@ -16,9 +16,9 @@ metadata:
     app.kubernetes.io/component: api
     app.kubernetes.io/part-of: task-manager
 data:
-  # --- Database: the app talks to ProxySQL, never to MySQL directly ---------
-  DB_HOST: proxysql.tasks-db.svc.cluster.local
-  DB_PORT: "6033"
+  # --- Database: a single MySQL instance, reached directly -----------------
+  DB_HOST: mysql-primary.tasks-db.svc.cluster.local
+  DB_PORT: "3306"
   DB_DATABASE: appdb
   DB_USERNAME: appuser
 

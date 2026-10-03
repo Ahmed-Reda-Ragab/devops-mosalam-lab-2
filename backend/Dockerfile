@@ -35,6 +35,7 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 COPY ./app ./app
 
+COPY --chown=1001:1001 ./app ./app
 USER 1001:1001
 
 EXPOSE 8000
