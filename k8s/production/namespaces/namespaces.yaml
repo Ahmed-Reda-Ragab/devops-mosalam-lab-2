@@ -18,6 +18,9 @@
 #  traffic. Namespaces are cluster-scoped, so only a platform admin can add the
 #  label. That is the whole multi-tenancy boundary, in one label.
 #
+#  The Traefik Gateway the lab cluster runs today (traefik/public) selects on a
+#  different label, gateway-access: "true", so tasks-app carries both.
+#
 #  Pod Security Standards:
 #    tasks-app / tasks-db / gateway -> "baseline" (blocks privileged pods; nginx
 #                                      and mysql still run fine).
@@ -27,6 +30,10 @@
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    # Argo CD never deletes this namespace, not even when its Application is
+    # deleted with cascade — that would take the PVCs inside with it.
+    argocd.argoproj.io/sync-options: Delete=false
   name: gateway
   labels:
     app.kubernetes.io/part-of: task-manager
@@ -41,10 +48,18 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    # Argo CD never deletes this namespace, not even when its Application is
+    # deleted with cascade — that would take the PVCs inside with it.
+    argocd.argoproj.io/sync-options: Delete=false
   name: tasks-app
   labels:
     app.kubernetes.io/part-of: task-manager
     gateway.el-programmer.click/access: "true"
+    # The label the Gateway that actually runs today — Traefik's traefik/public
+    # (rke2-cilium-private-cloud/rke2-lab/04-gateway.yaml) — selects on. Without
+    # it the task-manager HTTPRoute is NotAllowedByListeners and the site 404s.
+    gateway-access: "true"
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -52,6 +67,10 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    # Argo CD never deletes this namespace, not even when its Application is
+    # deleted with cascade — that would take the PVCs inside with it.
+    argocd.argoproj.io/sync-options: Delete=false
   name: tasks-db
   labels:
     app.kubernetes.io/part-of: task-manager
@@ -65,6 +84,10 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  annotations:
+    # Argo CD never deletes this namespace, not even when its Application is
+    # deleted with cascade — that would take the PVCs inside with it.
+    argocd.argoproj.io/sync-options: Delete=false
   name: monitoring
   labels:
     app.kubernetes.io/part-of: task-manager

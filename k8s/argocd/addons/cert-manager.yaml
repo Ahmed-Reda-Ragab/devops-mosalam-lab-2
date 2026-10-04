@@ -8,14 +8,19 @@
 #   a) Install them out of band (Helm or the provider add-on system) and let
 #      this repo manage only the workloads. Simplest; what most teams do first.
 #
-#   b) Apply this file once and let Argo CD own them too:
+#   b) Apply this file once and let Argo CD own it too:
 #        kubectl apply -f k8s/argocd/addons/cert-manager.yaml
-#        kubectl apply -f k8s/argocd/addons/ingress-nginx.yaml
 #      Then the platform itself is in git, which is the real GitOps end state.
 #
 #  Either way the ClusterIssuers in k8s/production/platform/ are managed by the
-#  platform Application, and they will stay "issuer not ready" until
-#  cert-manager exists.
+#  platform Application (k8s/argocd/later/20-platform.yaml), which cannot sync
+#  until cert-manager exists.
+#
+#  ⚠️  The issuers solve HTTP-01 through a Gateway, and the values below do NOT
+#  turn that on. Since cert-manager v1.15 there is no feature gate any more, but
+#  Gateway API support still has to be enabled in the controller config — add
+#  the setting for this chart version from cert-manager.io/docs/usage/gateway/
+#  before relying on those issuers.
 #
 #  Note the project: these live in "default", not "task-manager" — the
 #  AppProject whitelist deliberately does not allow CRDs.

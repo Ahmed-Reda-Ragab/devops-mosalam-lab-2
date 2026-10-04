@@ -2,10 +2,13 @@
 #  Wave 1 — the data tier. Compose enforced this order with
 #  "bring up docker-compose.database.yml first"; here the sync wave does it.
 #
-#  Sync order inside the wave does not actually matter: the replica init script
-#  waits for the primary, and ProxySQL retries its backends forever. The wave
-#  exists so the apps (wave 1) do not start hammering a database that has not
-#  even been scheduled yet.
+#  The wave exists so the apps (wave 2) do not start hammering a database that
+#  has not even been scheduled yet.
+#
+#  The database is mysql-simple.yaml — one MySQL, which the backend's DB_HOST,
+#  Adminer and the backup CronJob all point at. mysql-primary/ is the older
+#  layout and is EXCLUDED below: syncing it too would start a second, empty
+#  MySQL with its own 10Gi volume. Delete that folder once you no longer need it.
 # ============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -26,8 +29,8 @@ spec:
     path: k8s/production/database
     directory:
       recurse: true
-      # Keeps secrets.yaml.example out of the sync.
-      exclude: "*.example"
+      # secrets.yaml.example, and the superseded mysql-primary/ (see header).
+      exclude: "{*.example,mysql-primary/*}"
   destination:
     server: https://kubernetes.default.svc
     namespace: tasks-db
@@ -41,6 +44,9 @@ spec:
     syncOptions:
       - ServerSideApply=true
       - CreateNamespace=false
+      # ignoreDifferences below only hides the diff; without this a sync would
+      # still send the volumeClaimTemplates, which the API server rejects.
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:

@@ -1,5 +1,6 @@
 # ============================================================================
-#  Wave 2 — backend, frontend, Locust and the Ingresses.
+#  Wave 2 — backend, frontend, Locust, their NetworkPolicies and the HTTPRoute
+#  on the Traefik Gateway (traefik/public).
 #
 #  THIS IS THE APPLICATION THE CI PIPELINE DRIVES. The bump-manifests job in
 #  .github/workflows/ci.yml rewrites the image tag in
@@ -43,6 +44,10 @@ spec:
       # of them on every pass. On a 25-object Application this is the difference
       # between a 2-second and a 20-second sync.
       - ApplyOutOfSyncOnly=true
+      # ignoreDifferences below only hides the diff. Without this, every sync
+      # of the backend Deployment (e.g. each CI image bump) would still send
+      # replicas: 3 and knock the HPA's count back down mid-load.
+      - RespectIgnoreDifferences=true
     retry:
       limit: 5
       backoff:

@@ -25,8 +25,12 @@ k8s/
 ├── argocd/                          ← applied by hand, ONCE
 │   ├── 00-appproject.yaml           AppProject: the blast-radius fence
 │   ├── 01-root-app.yaml             app-of-apps root
-│   ├── applications/                six child Applications, ordered by sync wave
+│   ├── applications/                namespaces, database, apps — what the root syncs
+│   ├── later/                       platform, gateway, monitoring — NOT synced yet
 │   └── addons/cert-manager.yaml     OPTIONAL: cert-manager as an Argo Application
+│
+│   On the lab cluster (Traefik Gateway, no cert-manager) the runbook is
+│   rke2-cilium-private-cloud/docs/07-ArgoCD-GitOps.md.
 │
 ├── production/
 │   ├── namespaces/      wave -2   gateway, tasks-app, tasks-db, monitoring

@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared-argocd
+  namespace: argocd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflared-argocd
+  template:
+    metadata:
+      labels:
+        app: cloudflared-argocd
+    spec:
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:latest
+          args:
+            - tunnel
+            - --no-tls-verify
+            - --url
+            - https://argocd-server.argocd.svc.cluster.local:443

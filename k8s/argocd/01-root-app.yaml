@@ -2,17 +2,24 @@
 #  Root Application — the "app of apps".
 #
 #  This is the ONLY thing you apply by hand after the AppProject. It watches
-#  k8s/argocd/applications/ and creates the five child Applications found there,
-#  which in turn sync the actual manifests. From that point on, adding a
-#  component to the platform is a commit, not a kubectl command.
+#  k8s/argocd/applications/ and creates the child Applications found there
+#  (namespaces, database, apps), which in turn sync the actual manifests. From
+#  that point on, adding a component to the platform is a commit, not a kubectl
+#  command: moving a file from k8s/argocd/later/ into applications/ turns it on.
 #
 #     kubectl apply -f k8s/argocd/00-appproject.yaml
 #     kubectl apply -f k8s/argocd/01-root-app.yaml
 #     # nothing else, ever
 #
+#  The waves below only WAIT for each other if argocd-cm carries the
+#  argoproj.io_Application health check (Argo CD removed it in 1.8) — Helm
+#  value configs.cm."resource.customizations.health.argoproj.io_Application",
+#  the Lua snippet from the Argo CD docs (operator-manual/health). Without it
+#  all children start at once.
+#
 #  WHY app-of-apps AND NOT ONE BIG APPLICATION:
 #    * ordering — sync waves on the children bring namespaces up before the
-#      database, the database before the apps, the apps before monitoring;
+#      database, and the database before the apps;
 #    * blast radius — a broken monitoring manifest leaves the app Application
 #      healthy and synced instead of blocking the whole tree;
 #    * readable status — "database: Synced, apps: OutOfSync" tells you where to

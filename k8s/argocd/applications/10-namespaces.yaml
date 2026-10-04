@@ -3,7 +3,12 @@
 #
 #  Everything else targets one of these, so they must exist first. Argo CD sync
 #  waves run in ascending order and wait for each wave to become Healthy before
-#  starting the next.
+#  starting the next — for child Applications only when argocd-cm has the
+#  argoproj.io_Application health check (see 01-root-app.yaml).
+#
+#  The Namespace objects carry argocd.argoproj.io/sync-options: Delete=false, so
+#  even a cascading delete of this Application (or of the root) leaves them —
+#  and the MySQL volume inside tasks-db — alone.
 # ============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
