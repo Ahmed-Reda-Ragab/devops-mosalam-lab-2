@@ -1,65 +1,51 @@
 # ============================================================================
-#  TEST ONLY — Cloudflare Quick Tunnel -> Argo CD UI.
-#  Not synced by Argo CD (no Application points at k8s/trycloudflared-test/).
-#  Usage and cleanup: README.md in this folder.
+#  TEST ONLY — Cloudflare Quick Tunnel -> Prometheus.
+#  Prometheus and Alertmanager have NO login, so there is deliberately no tunnel
+#  for them here — use the SSH tunnel from docs/08.
 #
-#  http://…:80, not https://…:443. argocd-server runs with server.insecure=true
-#  (rke2-lab/40-argocd-values.yaml), so it speaks plain HTTP on every port of
-#  its Service; cloudflared opening TLS to it fails with "first record does not
-#  look like a TLS handshake" and the tunnel returns 502. Cloudflare's edge
-#  still serves the public URL over HTTPS.
-#
-#  ⚠️  Anyone with the trycloudflare.com link reaches the Argo CD login, and
-#  Argo CD admin can change anything in the cluster. Change the initial admin
-#  password first (docs/07 A4.4), and delete this when you are done.
-#
-#  The telegram-notify sidecar sends the link to the same bot and chat as
-#  Alertmanager (see 02-cloudflared-tasks.yaml). It needs Secret
-#  cloudflared-telegram in argocd:
-#    bash k8s/scripts/create-secrets.sh argocd
+#  The telegram-notify sidecar sends the link, /prometheus/ included
+#  (--web.route-prefix), to the same bot and chat as Alertmanager (see
+#  02-cloudflared-tasks.yaml). It needs Secret cloudflared-telegram in
+#  monitoring:
+#    bash k8s/scripts/create-secrets.sh monitoring
 #  Without it the tunnel still works; get the link from the logs instead:
-#  kubectl logs -n argocd -l app=cloudflared-argocd --tail=100 | grep -A2 "Your quick Tunnel"
+#  kubectl logs -n monitoring -l app=cloudflared-prometheus --tail=100 | grep -A2 "Your quick Tunnel"
 # ============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cloudflared-argocd
-  namespace: argocd
+  name: cloudflared-prometheus
+  namespace: monitoring
   labels:
-    app: cloudflared-argocd
+    app: cloudflared-prometheus
     app.kubernetes.io/part-of: trycloudflared-test
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: cloudflared-argocd
+      app: cloudflared-prometheus
   template:
     metadata:
       labels:
-        app: cloudflared-argocd
+        app: cloudflared-prometheus
         app.kubernetes.io/part-of: trycloudflared-test
     spec:
-      # cloudflared never talks to the Kubernetes API.
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 65532          # the image's nonroot user
+        runAsUser: 65532
         fsGroup: 65532   # lets 65532 read the 0440 token file
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: cloudflared
-          # Pinned: :latest changes under you between two test runs.
           image: cloudflare/cloudflared:2026.9.3
-          # The image's entrypoint is "cloudflared --no-autoupdate".
           args:
             - tunnel
-            # /ready on this port answers 200 once the tunnel is connected to
-            # Cloudflare's edge — that is what the readiness probe checks.
             - --metrics
             - 0.0.0.0:2000
             - --url
-            - http://argocd-server.argocd.svc.cluster.local:80
+            - http://prometheus.monitoring.svc.cluster.local:9090
           ports:
             - name: metrics
               containerPort: 2000
@@ -132,7 +118,7 @@ spec:
               value: "-5406600269"   # same chat as alertmanager.yml
             # Appended to the link: the path this UI is served on.
             - name: LINK_PATH
-              value: /
+              value: /prometheus/
             - name: APP
               valueFrom:
                 fieldRef:

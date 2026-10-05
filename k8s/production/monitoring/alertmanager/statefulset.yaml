@@ -33,6 +33,12 @@ spec:
         prometheus.io/port: "9093"
         prometheus.io/path: "/alertmanager/metrics"
     spec:
+      # The Secret below is mounted read-only at /run/secrets. If /var/run is
+      # a symlink to /run in this image (it is in grafana and mysql), the
+      # ServiceAccount token mount at /var/run/secrets/kubernetes.io/...
+      # needs a directory INSIDE that read-only mount and runc fails with
+      # "read-only file system". Alertmanager never calls the Kubernetes API.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534

@@ -1,7 +1,8 @@
 # ============================================================================
 #  Adminer — web DB UI. Compose service "adminer".
-#  Lives in tasks-db so it can reach ProxySQL / MySQL directly; it is published
-#  through ingress-nginx on adminer.el-programmer.click.
+#  Lives in tasks-db so it can reach MySQL directly. NOT published: its route
+#  ships disabled (httproute.yaml.optional). Reach it on demand with
+#     kubectl -n tasks-db port-forward svc/adminer 8083:8080
 # ============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -29,10 +30,9 @@ spec:
           image: adminer:4.8.1
           env:
             # Pre-fills the server field so you do not have to remember the
-            # FQDN. Point it at ProxySQL to exercise the R/W split, or at
-            # mysql-primary.tasks-db.svc.cluster.local:3306 to bypass it.
+            # FQDN.
             - name: ADMINER_DEFAULT_SERVER
-              value: proxysql.tasks-db.svc.cluster.local:6033
+              value: mysql-simple.tasks-db.svc.cluster.local:3306
           ports:
             - name: http
               containerPort: 8080

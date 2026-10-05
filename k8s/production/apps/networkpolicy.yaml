@@ -25,6 +25,12 @@
 #  These policies therefore cover what they can cover well: POD-TO-POD traffic
 #  inside and into the namespace.
 #
+#  ── ON THE LAB CLUSTER THE GATEWAY IS TRAEFIK, AND THAT CHANGES THE ABOVE ──
+#  Traefik (traefik/public) runs as ordinary pods with hostPort, NOT
+#  hostNetwork, so its requests DO carry a pod identity — the traefik
+#  namespace — and the default-deny below blocks them. Policy 4 at the end lets
+#  exactly that through. Without it the page loads forever and then errors.
+#
 #  ⚠️  Your CNI is Cilium, so these are enforced. On a CNI that ignores
 #  NetworkPolicy they would apply cleanly and do nothing.
 # ============================================================================
@@ -93,12 +99,45 @@ spec:
     - Ingress
   ingress:
     # Prometheus only — nothing else in the cluster has business talking to them.
+    # POD ports, not Service ports: the frontend Service is :80, but nginx in
+    # the pod listens on 8080, and that is what a NetworkPolicy matches.
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: monitoring
       ports:
         - protocol: TCP
-          port: 80
+          port: 8080
         - protocol: TCP
           port: 8089
+---
+# --- 4. Traefik -> frontend and backend --------------------------------------
+# The lab cluster's Gateway (see the header). Pod ports again: frontend 8080,
+# backend 8000. Locust is left out on purpose — its route ships disabled
+# (routes/httproute-locust.yaml.optional); add 8089 and locust here if you
+# enable it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-traefik
+  namespace: tasks-app
+  labels:
+    app.kubernetes.io/part-of: task-manager
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [frontend, backend]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8000

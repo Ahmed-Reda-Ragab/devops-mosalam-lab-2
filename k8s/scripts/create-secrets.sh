@@ -10,10 +10,13 @@
 #   tasks-app   cloudflared-telegram  telegram_token          <- telegram_token
 #   monitoring  grafana-secrets       grafana_admin_password  <- grafana_admin_password
 #   monitoring  alertmanager-secrets  telegram_token          <- telegram_token
+#   monitoring  cloudflared-telegram  telegram_token          <- telegram_token
+#   argocd      cloudflared-telegram  telegram_token          <- telegram_token
 #
 # (replication_password and traefik_dashboard_users are Compose-only: nothing
 #  in k8s/production reads them any more. cloudflared-telegram is read only by
-#  the test tunnel k8s/trycloudflared-test/02-cloudflared-tasks.yaml.)
+#  the test tunnels in k8s/trycloudflared-test/, one copy per namespace they
+#  run in.)
 #
 # Usage — on a machine whose kubectl reaches the cluster (rke2-cp1):
 #   bash k8s/scripts/create-secrets.sh                    # every namespace
@@ -56,6 +59,8 @@ SPECS=(
   "tasks-app|cloudflared-telegram|telegram_token=telegram_token"
   "monitoring|grafana-secrets|grafana_admin_password=grafana_admin_password"
   "monitoring|alertmanager-secrets|telegram_token=telegram_token"
+  "monitoring|cloudflared-telegram|telegram_token=telegram_token"
+  "argocd|cloudflared-telegram|telegram_token=telegram_token"
 )
 
 # Changing a Secret's value (--force) is not the whole job: pods do not re-read
@@ -66,7 +71,7 @@ declare -A BEFORE_CHANGE=(
 declare -A AFTER_CHANGE=(
   [mysql-secrets]="kubectl -n tasks-db rollout restart sts/mysql-simple"
   [backend-secrets]="kubectl -n tasks-app rollout restart deploy/backend"
-  [cloudflared-telegram]="kubectl -n tasks-app rollout restart deploy/cloudflared-tasks   (new link, sent with the new token)"
+  [cloudflared-telegram]="kubectl -n <ns> rollout restart deploy -l app.kubernetes.io/part-of=trycloudflared-test   (new links, sent with the new token)"
   [grafana-secrets]="kubectl -n monitoring exec deploy/grafana -- grafana cli admin reset-admin-password '<new>'   (Grafana reads it only on first start)"
   [alertmanager-secrets]="kubectl -n monitoring rollout restart sts/alertmanager"
 )
@@ -139,7 +144,7 @@ for o in ${ONLY[@]+"${ONLY[@]}"}; do
     if [[ "${spec%%|*}" == "$o" ]]; then found=1; fi
   done
   if [[ $found -eq 0 ]]; then
-    echo "no secrets are defined for namespace '$o' (known: tasks-db tasks-app monitoring)" >&2
+    echo "no secrets are defined for namespace '$o' (known: tasks-db tasks-app monitoring argocd)" >&2
     exit 2
   fi
 done
@@ -225,7 +230,7 @@ for spec in "${SPECS[@]}"; do
       hint "the cluster's value is what the running app uses. To replace it:"
       if [[ -n "${BEFORE_CHANGE[$name]:-}" ]]; then hint "1) ${BEFORE_CHANGE[$name]}"; fi
       hint "2) bash k8s/scripts/create-secrets.sh --force ${ns}"
-      hint "3) ${AFTER_CHANGE[$name]}"
+      hint "3) ${AFTER_CHANGE[$name]//<ns>/$ns}"
       continue
     fi
     action="updated"
@@ -244,7 +249,7 @@ for spec in "${SPECS[@]}"; do
     | kubectl apply -f - >/dev/null
   ok "${name} ${action}"
   if [[ "$action" == "updated" ]]; then
-    hint "pods do not pick this up by themselves — now run: ${AFTER_CHANGE[$name]}"
+    hint "pods do not pick this up by themselves — now run: ${AFTER_CHANGE[$name]//<ns>/$ns}"
   fi
 done
 

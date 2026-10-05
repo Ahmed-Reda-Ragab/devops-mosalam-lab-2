@@ -65,6 +65,9 @@ kubectl apply -f k8s/argocd/01-root-app.yaml
 See [k8s/README.md](k8s/README.md) for the cluster prerequisites, the secret
 handling, and a full account of what changed relative to the Compose stack.
 
+**الشرح الكامل بالعربي** — كل مفهوم، كل قرار وليه اتخذ، سيناريوهات الفشل، و runbook
+لإعادة البناء من الصفر — في **[docs-rke2/](docs-rke2/)**.
+
 ### Access
 
 Traefik is the single public entrypoint on `80`/`443`; `80` redirects to `443`.

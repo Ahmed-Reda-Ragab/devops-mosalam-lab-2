@@ -88,6 +88,7 @@ spec:
         # /ready, so the link already answers when the message arrives. Loops
         # instead of exiting: if the cloudflared container restarts it gets a new
         # link, and that one is sent too.
+        # The same block is in every file of this folder; only LINK_PATH differs.
         - name: telegram-notify
           image: curlimages/curl:8.22.0
           command: ["/bin/sh", "-c"]
@@ -103,7 +104,7 @@ spec:
               while true; do
                 sleep 10
                 if [ ! -s "$TOKEN_FILE" ]; then
-                  say "waiting: no $TOKEN_FILE, run: bash k8s/scripts/create-secrets.sh tasks-app"
+                  say "waiting: no $TOKEN_FILE, run: bash k8s/scripts/create-secrets.sh $POD_NAMESPACE"
                   continue
                 fi
                 code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:2000/ready)
@@ -118,19 +119,30 @@ spec:
                   continue
                 fi
                 [ "$host" != "$last" ] || continue
-                text=$(printf '<b>cloudflared-tasks</b>: new link\nhttps://%s/\npod %s on %s' "$host" "$POD_NAME" "$NODE_NAME")
+                text=$(printf '<b>%s</b>: new link\nhttps://%s%s\npod %s on %s' "$APP" "$host" "$LINK_PATH" "$POD_NAME" "$NODE_NAME")
                 resp=$(curl -sS --max-time 15 "https://api.telegram.org/bot$(cat "$TOKEN_FILE")/sendMessage" \
                   --data-urlencode "chat_id=$CHAT_ID" \
                   --data-urlencode "parse_mode=HTML" \
                   --data-urlencode "text=$text")
                 case "$resp" in
-                  *'"ok":true'*) say "sent https://$host/"; last=$host ;;
+                  *'"ok":true'*) say "sent https://$host$LINK_PATH"; last=$host ;;
                   *) say "telegram send failed, retrying every 10s: $resp" ;;
                 esac
               done
           env:
             - name: CHAT_ID
               value: "-5406600269"   # same chat as alertmanager.yml
+            # Appended to the link: the path this UI is served on.
+            - name: LINK_PATH
+              value: /
+            - name: APP
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['app']
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: POD_NAME
               valueFrom:
                 fieldRef:

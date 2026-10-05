@@ -1,65 +1,53 @@
 # ============================================================================
-#  TEST ONLY — Cloudflare Quick Tunnel -> Argo CD UI.
-#  Not synced by Argo CD (no Application points at k8s/trycloudflared-test/).
-#  Usage and cleanup: README.md in this folder.
+#  TEST ONLY — Cloudflare Quick Tunnel -> adminer.
 #
-#  http://…:80, not https://…:443. argocd-server runs with server.insecure=true
-#  (rke2-lab/40-argocd-values.yaml), so it speaks plain HTTP on every port of
-#  its Service; cloudflared opening TLS to it fails with "first record does not
-#  look like a TLS handshake" and the tunnel returns 502. Cloudflare's edge
-#  still serves the public URL over HTTPS.
-#
-#  ⚠️  Anyone with the trycloudflare.com link reaches the Argo CD login, and
-#  Argo CD admin can change anything in the cluster. Change the initial admin
-#  password first (docs/07 A4.4), and delete this when you are done.
+#  Lives IN the monitoring namespace on purpose: monitoring/networkpolicy.yaml
+#  lets adminer be reached only from inside that namespace
+#  (allow-intra-namespace + uis-deny-cross-namespace). A cloudflared pod in any
+#  other namespace would be dropped.
 #
 #  The telegram-notify sidecar sends the link to the same bot and chat as
 #  Alertmanager (see 02-cloudflared-tasks.yaml). It needs Secret
-#  cloudflared-telegram in argocd:
-#    bash k8s/scripts/create-secrets.sh argocd
+#  cloudflared-telegram in monitoring:
+#    bash k8s/scripts/create-secrets.sh monitoring
 #  Without it the tunnel still works; get the link from the logs instead:
-#  kubectl logs -n argocd -l app=cloudflared-argocd --tail=100 | grep -A2 "Your quick Tunnel"
+#  kubectl logs -n monitoring -l app=cloudflared-adminer --tail=100 | grep -A2 "Your quick Tunnel"
 # ============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cloudflared-argocd
-  namespace: argocd
+  name: cloudflared-adminer
+  namespace: monitoring
   labels:
-    app: cloudflared-argocd
+    app: cloudflared-adminer
     app.kubernetes.io/part-of: trycloudflared-test
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: cloudflared-argocd
+      app: cloudflared-adminer
   template:
     metadata:
       labels:
-        app: cloudflared-argocd
+        app: cloudflared-adminer
         app.kubernetes.io/part-of: trycloudflared-test
     spec:
-      # cloudflared never talks to the Kubernetes API.
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 65532          # the image's nonroot user
+        runAsUser: 65532
         fsGroup: 65532   # lets 65532 read the 0440 token file
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: cloudflared
-          # Pinned: :latest changes under you between two test runs.
           image: cloudflare/cloudflared:2026.9.3
-          # The image's entrypoint is "cloudflared --no-autoupdate".
           args:
             - tunnel
-            # /ready on this port answers 200 once the tunnel is connected to
-            # Cloudflare's edge — that is what the readiness probe checks.
             - --metrics
             - 0.0.0.0:2000
             - --url
-            - http://argocd-server.argocd.svc.cluster.local:80
+            - http://adminer.tasks-db.svc.cluster.local:8080
           ports:
             - name: metrics
               containerPort: 2000

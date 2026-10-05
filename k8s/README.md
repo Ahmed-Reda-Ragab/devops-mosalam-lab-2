@@ -200,19 +200,10 @@ kubectl get gatewayclass cilium          # must be Accepted=True
 kubectl create ns gateway tasks-app tasks-db monitoring
 
 # 3) Secrets — NEVER in git as plaintext. See §5.
-kubectl -n tasks-db create secret generic mysql-secrets \
-  --from-file=mysql_root_password=secrets/mysql_root_password \
-  --from-file=replication_password=secrets/replication_password \
-  --from-file=db_password=secrets/db_password \
-  --from-literal=monitor_password="$(openssl rand -hex 16)"
-
-kubectl -n tasks-app create secret generic backend-secrets \
-  --from-file=db_password=secrets/db_password
-
-kubectl -n monitoring create secret generic grafana-secrets \
-  --from-file=grafana_admin_password=secrets/grafana_admin_password
-kubectl -n monitoring create secret generic alertmanager-secrets \
-  --from-file=telegram_token=secrets/telegram_token
+#    Reads secrets/<name> (one value per file), reports anything missing,
+#    and never overwrites a live Secret with a different value without --force.
+bash k8s/scripts/create-secrets.sh --check
+bash k8s/scripts/create-secrets.sh
 
 # 4) Hand it to Argo CD. These two commands are the last kubectl you run.
 kubectl apply -f k8s/argocd/00-appproject.yaml
