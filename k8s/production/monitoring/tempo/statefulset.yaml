@@ -111,4 +111,4 @@ spec:
         # storageClassName: gp3
         resources:
           requests:
-            storage: 20Gi
+            storage: 5Gi   # 48h of traces (block_retention)

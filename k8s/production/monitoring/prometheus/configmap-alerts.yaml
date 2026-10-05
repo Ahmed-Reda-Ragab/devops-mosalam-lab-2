@@ -5,7 +5,7 @@
 #    1) API is slow ............. BackendHighLatencyP95  (+ BackendHighErrorRate)
 #    2) DB usage is high ........ ContainerNearMemoryLimit / ContainerCPUThrottling
 #    3) A container went down ... TargetDown + DatabaseDown / FrontendDown /
-#                                 GatewayEnvoyDown / ContainerRestarting
+#                                 TraefikNotReady / ContainerRestarting
 #    4) Memory almost full ...... ContainerNearMemoryLimit + HostHighMemory
 #    5) SSL about to expire ..... SSLCertificateExpiringSoon (via blackbox probe)
 #
@@ -49,25 +49,17 @@ data:
           # kube-state-metrics reports readiness directly, which is both more
           # precise (a running-but-unready MySQL still counts as down) and does
           # not depend on cAdvisor label conventions.
+          # mysql-simple is the one database (backend-config DB_HOST). There is
+          # no replica any more, so DatabaseReplicaDown is gone with it.
           - alert: DatabaseDown
-            expr: kube_statefulset_status_replicas_ready{namespace="tasks-db", statefulset="mysql-primary"} < 1
+            expr: kube_statefulset_status_replicas_ready{namespace="tasks-db", statefulset="mysql-simple"} < 1
             for: 2m
             labels:
               severity: critical
               service: db
             annotations:
-              summary: 'Database (MySQL primary) has no ready replica'
-              description: 'The mysql-primary StatefulSet has 0 ready pods for over 2 minutes — writes are failing.'
-
-          - alert: DatabaseReplicaDown
-            expr: kube_statefulset_status_replicas_ready{namespace="tasks-db", statefulset="mysql-replica"} < 1
-            for: 5m
-            labels:
-              severity: warning
-              service: db
-            annotations:
-              summary: 'MySQL replica has no ready replica'
-              description: 'ProxySQL will route every SELECT to the primary while this lasts — expect higher primary load.'
+              summary: 'Database (mysql-simple) has no ready replica'
+              description: 'The mysql-simple StatefulSet has 0 ready pods for over 2 minutes — /api reads and writes are failing.'
 
           - alert: FrontendDown
             expr: kube_deployment_status_replicas_available{namespace="tasks-app", deployment="frontend"} < 1
@@ -79,25 +71,35 @@ data:
               summary: 'Frontend has no available pods'
               description: 'The frontend Deployment has 0 available replicas for over 2 minutes — the site is not being served.'
 
-          # Was ReverseProxyDown (nginx|traefik container), then briefly the
-          # ingress-nginx Deployment. The edge is now Cilium's Gateway API
-          # Envoy, which runs as a DaemonSet in kube-system — so the question is
-          # not "are replicas available" but "is at least one node serving".
-          - alert: GatewayEnvoyDown
-            expr: absent(up{job="cilium-envoy"} == 1)
-            for: 2m
+          # The edge on the lab cluster is Traefik, a DaemonSet in the traefik
+          # namespace (hostPort 80/443 on every node + the LB IP). Read from
+          # kube-state-metrics rather than scraping Traefik, so it works without
+          # any Traefik metrics config. The blackbox probe (HTTPSProbeFailed)
+          # covers "pods are up but routing is broken".
+          # (Was GatewayEnvoyDown on up{job="cilium-envoy"} — a job this
+          # cluster does not have, so absent() made it fire forever.)
+          - alert: TraefikNotReady
+            expr: |
+              kube_daemonset_status_number_ready{namespace="traefik", daemonset="traefik"}
+                < kube_daemonset_status_desired_number_scheduled{namespace="traefik", daemonset="traefik"}
+            for: 5m
             labels:
               severity: critical
               service: gateway
             annotations:
-              summary: 'No Cilium Envoy is up — the Gateway is not serving'
-              description: 'Every cilium-envoy instance is down or unscrapable. The Gateway terminates all external traffic, so the whole site is unreachable from outside.'
+              summary: 'Traefik is not ready on every node'
+              description: '{{ $value }} Traefik pods ready, fewer than scheduled. A node without one drops whatever the lab DNAT sends it.'
 
           # A Cilium agent down means that node cannot program its datapath:
           # its pods lose Service resolution and policy enforcement. With
           # kube-proxy replaced there is no fallback path.
+          # (Was count(up{job="cilium"}) — Cilium metrics are not enabled on the
+          # lab cluster, so that side was always empty and the rule could never
+          # fire. kube-state-metrics sees the DaemonSet regardless.)
           - alert: CiliumAgentDown
-            expr: count(up{job="cilium"} == 1) < count(kube_node_info)
+            expr: |
+              kube_daemonset_status_number_ready{namespace="kube-system", daemonset="cilium"}
+                < kube_daemonset_status_desired_number_scheduled{namespace="kube-system", daemonset="cilium"}
             for: 5m
             labels:
               severity: critical
@@ -106,17 +108,9 @@ data:
               summary: 'A Cilium agent is not running on every node'
               description: 'Cilium replaces kube-proxy here, so a node without a healthy agent cannot resolve ClusterIPs or enforce NetworkPolicy at all.'
 
-          # Hubble is how you see WHY traffic is being dropped. Losing it is not
-          # an outage, but it blinds the next investigation.
-          - alert: HubbleDown
-            expr: absent(up{job="hubble"} == 1)
-            for: 15m
-            labels:
-              severity: warning
-              service: cni
-            annotations:
-              summary: 'Hubble metrics are not being scraped'
-              description: 'Flow-level visibility is gone: hubble_drop_total and the HTTP flow metrics will have a gap. Check the hubble-metrics Service in kube-system.'
+          # HubbleDown removed: it alerted on absent(up{job="hubble"}), and
+          # hubble.metrics is not enabled in the lab's Cilium values, so it
+          # would have fired 15 minutes after every Prometheus start.
 
           - alert: BackendNoAvailablePods
             expr: kube_deployment_status_replicas_available{namespace="tasks-app", deployment="backend"} < 1
@@ -324,9 +318,11 @@ data:
               summary: 'HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} is pinned at max'
               description: 'It cannot scale out further — this is the ceiling, and load above it turns into latency. Raise maxReplicas or find the bottleneck.'
 
-      # --- HTTPS / TLS — UNCHANGED ------------------------------------------
-      # Fed by the blackbox exporter probing https://el-programmer.click, now
-      # served by the Cilium Gateway with a cert-manager certificate.
+      # --- Probes / TLS ------------------------------------------------------
+      # Fed by the blackbox exporter. On the lab cluster it probes the app
+      # THROUGH Traefik over plain HTTP (no public domain, no certificate yet),
+      # so probe_ssl_earliest_cert_expiry does not exist and the two SSL rules
+      # stay silent until an https:// target is added back.
       - name: tls
         rules:
           - alert: HTTPSProbeFailed

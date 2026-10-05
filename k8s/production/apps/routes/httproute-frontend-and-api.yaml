@@ -47,14 +47,22 @@ metadata:
   labels:
     app.kubernetes.io/part-of: task-manager
 spec:
+  # The Gateway the lab cluster actually runs: Traefik's "public", listener
+  # "http" (:8000 inside Traefik, :80 on the LB IP / hostPort). The Cilium
+  # Gateway gateway/main described above is not deployed there, and a route
+  # whose parent does not exist gets no status at all, which Argo CD reports as
+  # Progressing forever. The tasks-app namespace needs gateway-access=true
+  # (namespaces.yaml) for traefik/public to accept this route.
   parentRefs:
-    - name: main
-      namespace: gateway
+    - name: public
+      namespace: traefik
       kind: Gateway
       group: gateway.networking.k8s.io
-      sectionName: https
+      sectionName: http
   hostnames:
-    - el-programmer.click
+    # The Host the Cloudflare Tunnel sends (--http-host-header). Add
+    # el-programmer.click here once the real domain points at the lab.
+    - tasks.el-programmer.click
 
   rules:
     # ---- /api — the guarded API route ------------------------------------

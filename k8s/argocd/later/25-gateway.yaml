@@ -1,0 +1,73 @@
+# ----------------------------------------------------------------------------
+#  NOT SYNCED (k8s/argocd/later/). This Application creates a Cilium Gateway
+#  (gatewayClassName: cilium). The current cluster's Gateway is Traefik
+#  (traefik/public, installed by rke2-cilium-private-cloud/scripts/08), and
+#  Cilium's gatewayAPI is not enabled, so nothing would ever program it and its
+#  Certificate kind does not exist without cert-manager. Only for the Cilium
+#  Gateway design described in k8s/README.md.
+# ----------------------------------------------------------------------------
+# ============================================================================
+#  Wave 0 — the shared Gateway, its certificate and the :80 -> :443 redirect.
+#
+#  Between platform (-1, the ClusterIssuers it needs) and database (1) /
+#  apps (2) / monitoring (3), whose HTTPRoutes attach to it.
+#
+#  ── WHY ITS OWN APPLICATION ───────────────────────────────────────────────
+#  This is the Gateway API role split expressed in Argo CD. The Gateway, the TLS
+#  certificate and which namespaces may attach are PLATFORM concerns; the
+#  HTTPRoutes are APPLICATION concerns and live with their apps. Giving the
+#  Gateway its own Application means you can grant a team sync rights on
+#  task-manager-apps without also handing them the hostname and the private key.
+#  With Ingress there was nothing to split: the TLS block and the routing rules
+#  were the same object.
+#
+#  ── prune: false ──────────────────────────────────────────────────────────
+#  Deleting the Gateway takes down every hostname at once, and cert-manager
+#  would then have no HTTP-01 solver target, so a re-create also has to wait out
+#  a fresh issuance. Too much leverage for an accidental file deletion.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: task-manager-gateway
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: task-manager
+  source:
+    repoURL: https://github.com/Ahmed-Reda-Ragab/devops-mosalam-lab-2.git
+    targetRevision: main
+    path: k8s/production/gateway
+    directory:
+      recurse: true
+      exclude: "*.example"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: gateway
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+  ignoreDifferences:
+    # Cilium writes the assigned address and the listener/route status back onto
+    # the Gateway. Argo would see that as drift against git on every refresh and
+    # selfHeal would strip it, which makes the Gateway flap.
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      jsonPointers:
+        - /spec/addresses
+  revisionHistoryLimit: 5

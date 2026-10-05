@@ -1,0 +1,77 @@
+# ============================================================================
+#  Wave 3 — the observability stack. Last on purpose: it observes the other
+#  three, so there is nothing for it to see until they are up, and a slow
+#  Prometheus start should never delay the application rollout.
+#
+#  ── ROLLED OUT IN STAGES, MOST IMPORTANT FIRST ─────────────────────────────
+#  directory.include below is the switch. Each stage is ONE commit that adds
+#  folders to it; check the stage works before the next. The runbook is
+#  rke2-cilium-private-cloud/docs/08-Monitoring-خطوة-خطوة.md.
+#
+#    M1  metrics     networkpolicy.yaml, prometheus, kube-state-metrics, node-exporter
+#    M2  dashboards  + grafana                 (needs Secret grafana-secrets)
+#    M3  alerts      + alertmanager, blackbox  (needs Secret alertmanager-secrets)
+#    M4  logs        + loki, promtail
+#    M5  traces      + tempo, otel-collector
+#
+#  routes/ is never included: both routes target the Cilium Gateway gateway/main,
+#  which the lab cluster does not run (they ship as *.optional).
+#
+#  This file starts life in k8s/argocd/later/. Moving it into
+#  k8s/argocd/applications/ is what starts M1.
+# ============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: task-manager-monitoring
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: task-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: task-manager
+  source:
+    repoURL: https://github.com/Ahmed-Reda-Ragab/devops-mosalam-lab-2.git
+    targetRevision: main
+    path: k8s/production/monitoring
+    directory:
+      recurse: true
+      # M1. Add the next stage's folders inside the braces, e.g. M2:
+      #   "{networkpolicy.yaml,prometheus/*,kube-state-metrics/*,node-exporter/*,grafana/*}"
+      include: "{networkpolicy.yaml,prometheus/*,kube-state-metrics/*,node-exporter/*}"
+      exclude: "*.example"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      # prune: false — the StatefulSets here hold the metric, log and trace
+      # history. Same reasoning as the database. It also means taking a folder
+      # OUT of include does not delete what it created; do that by hand.
+      prune: false
+      selfHeal: true
+    syncOptions:
+      # ServerSideApply matters more here than anywhere else: the
+      # grafana-dashboards ConfigMap is ~33 KB, and client-side apply would
+      # store a second copy of it in a last-applied-configuration annotation.
+      # Add a few more dashboards and that crosses the 1 MiB object limit.
+      - ServerSideApply=true
+      - CreateNamespace=false
+      # ignoreDifferences below only hides the diff; without this a sync would
+      # still send the volumeClaimTemplates, which the API server rejects.
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates
+  revisionHistoryLimit: 5

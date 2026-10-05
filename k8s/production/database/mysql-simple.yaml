@@ -199,7 +199,7 @@ spec:
 ---
 # --- 4. NetworkPolicy — needed, not optional --------------------------------
 #        networkpolicy.yaml in this folder default-denies ingress to every pod
-#        in tasks-db, and its MySQL rule only names mysql-primary/mysql-replica.
+#        in tasks-db, and its MySQL rule only names mysql-primary.
 #        Without this, nothing could connect to mysql-simple.
 #        namespaceSelector + podSelector in ONE item = AND: backend pods in
 #        tasks-app only, not Locust or the frontend.

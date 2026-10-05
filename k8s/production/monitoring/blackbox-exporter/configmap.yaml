@@ -36,3 +36,16 @@ data:
             # If you deployed with letsencrypt-STAGING, this stays failing:
             # the staging chain is untrusted by design.
             insecure_skip_verify: false
+      # The app through Traefik, from inside the cluster — what the lab's
+      # blackbox job uses until the real domain is live. Traefik picks the
+      # HTTPRoute by Host, so without this header the request would match the
+      # demo route (or nothing) instead of task-manager. Only 200 counts.
+      http_tasks:
+        prober: http
+        timeout: 5s
+        http:
+          preferred_ip_protocol: ip4
+          valid_status_codes: [200]
+          method: GET
+          headers:
+            Host: tasks.el-programmer.click

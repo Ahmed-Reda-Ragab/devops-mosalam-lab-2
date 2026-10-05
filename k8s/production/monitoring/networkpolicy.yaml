@@ -22,9 +22,12 @@ spec:
     - Ingress
 ---
 # --- The three UIs ----------------------------------------------------------
-# No Gateway rule: its Envoy runs on the host network and arrives as
-# reserved:host, which Cilium allows by default and no NetworkPolicy selector can
-# name. See the header of ../apps/networkpolicy.yaml for the full reasoning.
+# No Gateway rule: on the lab cluster their routes ship disabled
+# (routes/*.optional), so nothing outside this namespace should reach them.
+# What still works: an SSH tunnel through a node (arrives as Cilium's
+# reserved:host, allowed by default) and a cloudflared pod placed IN this
+# namespace (k8s/trycloudflared-test/03-cloudflared-grafana.yaml), which
+# allow-intra-namespace lets through.
 #
 # allow-intra-namespace below already lets Grafana query Prometheus/Loki/Tempo
 # and lets Prometheus scrape all three, so these pods need no additional

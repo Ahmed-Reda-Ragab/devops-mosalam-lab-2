@@ -94,4 +94,4 @@ spec:
         # storageClassName: gp3
         resources:
           requests:
-            storage: 20Gi
+            storage: 5Gi   # 7 days of logs (retention_period: 168h)

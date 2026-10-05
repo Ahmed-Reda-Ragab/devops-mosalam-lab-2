@@ -45,6 +45,9 @@ spec:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.path=/prometheus
             - --storage.tsdb.retention.time=15d
+            # Whichever limit is hit first wins. The size cap keeps the TSDB
+            # inside its 10Gi volume instead of filling it and crash-looping.
+            - --storage.tsdb.retention.size=8GB
             - --web.console.libraries=/usr/share/prometheus/console_libraries
             - --web.console.templates=/usr/share/prometheus/consoles
             # Public canonical URL (used to build absolute links / redirects).
@@ -143,7 +146,10 @@ spec:
         name: data
       spec:
         accessModes: ["ReadWriteOnce"]
-        # storageClassName: gp3
+        # Sized for the lab: Longhorn keeps 3 replicas of every volume, one per
+        # node, so each Gi here costs 3Gi of disk. A PVC can grow later
+        # (allowVolumeExpansion) but never shrink, and volumeClaimTemplates are
+        # immutable — start small.
         resources:
           requests:
-            storage: 50Gi
+            storage: 10Gi

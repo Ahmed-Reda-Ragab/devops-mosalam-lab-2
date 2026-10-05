@@ -13,7 +13,10 @@ metadata:
     app.kubernetes.io/component: traces
     app.kubernetes.io/part-of: task-manager
 spec:
-  replicas: 2
+  # One on the lab's small nodes. Prometheus scrapes it through the Service
+  # (static target), so with two replicas each scrape hit a random one and the
+  # self-metrics jumped between them anyway.
+  replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: otel-collector

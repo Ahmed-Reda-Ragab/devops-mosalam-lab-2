@@ -18,11 +18,9 @@ spec:
         app.kubernetes.io/name: kube-state-metrics
         app.kubernetes.io/component: metrics
         app.kubernetes.io/part-of: task-manager
-      annotations:
-        # Picked up by the kubernetes-pods scrape job -> job="kube-state-metrics".
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
-        prometheus.io/path: "/metrics"
+      # No prometheus.io/scrape annotation on purpose: Prometheus scrapes this
+      # pod in its own job with honor_labels: true (prometheus/configmap.yaml).
+      # Through kubernetes-pods its namespace="..." labels would be overwritten.
     spec:
       serviceAccountName: kube-state-metrics
       securityContext:

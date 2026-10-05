@@ -19,4 +19,4 @@ spec:
   # storageClassName: gp3
   resources:
     requests:
-      storage: 5Gi
+      storage: 1Gi   # grafana.db only; dashboards come from ConfigMaps

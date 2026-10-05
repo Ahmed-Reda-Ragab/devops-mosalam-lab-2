@@ -1,8 +1,26 @@
+# ============================================================================
+#  TEST ONLY — Cloudflare Quick Tunnel -> Argo CD UI.
+#  Not synced by Argo CD (no Application points at k8s/trycloudflared-test/).
+#  Usage and cleanup: README.md in this folder.
+#
+#  http://…:80, not https://…:443. argocd-server runs with server.insecure=true
+#  (rke2-lab/40-argocd-values.yaml), so it speaks plain HTTP on every port of
+#  its Service; cloudflared opening TLS to it fails with "first record does not
+#  look like a TLS handshake" and the tunnel returns 502. Cloudflare's edge
+#  still serves the public URL over HTTPS.
+#
+#  ⚠️  Anyone with the trycloudflare.com link reaches the Argo CD login, and
+#  Argo CD admin can change anything in the cluster. Change the initial admin
+#  password first (docs/07 A4.4), and delete this when you are done.
+# ============================================================================
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: cloudflared-argocd
   namespace: argocd
+  labels:
+    app: cloudflared-argocd
+    app.kubernetes.io/part-of: trycloudflared-test
 spec:
   replicas: 1
   selector:
@@ -12,12 +30,45 @@ spec:
     metadata:
       labels:
         app: cloudflared-argocd
+        app.kubernetes.io/part-of: trycloudflared-test
     spec:
+      # cloudflared never talks to the Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532          # the image's nonroot user
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: cloudflared
-          image: cloudflare/cloudflared:latest
+          # Pinned: :latest changes under you between two test runs.
+          image: cloudflare/cloudflared:2026.9.3
+          # The image's entrypoint is "cloudflared --no-autoupdate".
           args:
             - tunnel
-            - --no-tls-verify
+            # /ready on this port answers 200 once the tunnel is connected to
+            # Cloudflare's edge — that is what the readiness probe checks.
+            - --metrics
+            - 0.0.0.0:2000
             - --url
-            - https://argocd-server.argocd.svc.cluster.local:443
+            - http://argocd-server.argocd.svc.cluster.local:80
+          ports:
+            - name: metrics
+              containerPort: 2000
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi

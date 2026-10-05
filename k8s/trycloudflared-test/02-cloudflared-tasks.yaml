@@ -1,0 +1,75 @@
+# ============================================================================
+#  TEST ONLY — Cloudflare Quick Tunnel -> Task Manager, through Traefik.
+#  Not synced by Argo CD. Usage and cleanup: README.md in this folder.
+#
+#  The same path as the cloudflared process on cp1
+#  (rke2-cilium-private-cloud/docs/06), but as a pod: it survives cp1 going
+#  down, because the Deployment is rescheduled on another node.
+#
+#    tunnel -> Service traefik/traefik:80 -> Traefik (Gateway traefik/public)
+#           -> HTTPRoute tasks-app/task-manager -> frontend / backend
+#
+#  --http-host-header is required: Traefik picks the HTTPRoute by Host, and the
+#  route matches tasks.el-programmer.click. Without it the request arrives with
+#  Host: xxxx.trycloudflare.com and gets a 404.
+#
+#  Lives in tasks-app, next to the app, but Argo CD does not manage it: it has
+#  no tracking annotation, so prune on task-manager-apps never touches it.
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared-tasks
+  namespace: tasks-app
+  labels:
+    app: cloudflared-tasks
+    app.kubernetes.io/part-of: trycloudflared-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudflared-tasks
+  template:
+    metadata:
+      labels:
+        app: cloudflared-tasks
+        app.kubernetes.io/part-of: trycloudflared-test
+    spec:
+      automountServiceAccountToken: false
+      # tasks-app warns on the "restricted" Pod Security level; this pod meets it.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2026.9.3
+          args:
+            - tunnel
+            - --metrics
+            - 0.0.0.0:2000
+            - --url
+            - http://traefik.traefik.svc.cluster.local:80
+            - --http-host-header
+            - tasks.el-programmer.click
+          ports:
+            - name: metrics
+              containerPort: 2000
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            periodSeconds: 10
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
