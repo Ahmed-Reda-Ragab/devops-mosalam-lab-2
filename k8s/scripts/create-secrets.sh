@@ -7,11 +7,13 @@
 #   tasks-db    mysql-secrets         mysql_root_password     <- mysql_root_password
 #                                     db_password             <- db_password
 #   tasks-app   backend-secrets       db_password             <- db_password
+#   tasks-app   cloudflared-telegram  telegram_token          <- telegram_token
 #   monitoring  grafana-secrets       grafana_admin_password  <- grafana_admin_password
 #   monitoring  alertmanager-secrets  telegram_token          <- telegram_token
 #
 # (replication_password and traefik_dashboard_users are Compose-only: nothing
-#  in k8s/production reads them any more.)
+#  in k8s/production reads them any more. cloudflared-telegram is read only by
+#  the test tunnel k8s/trycloudflared-test/02-cloudflared-tasks.yaml.)
 #
 # Usage — on a machine whose kubectl reaches the cluster (rke2-cp1):
 #   bash k8s/scripts/create-secrets.sh                    # every namespace
@@ -51,6 +53,7 @@ SECRETS_DIR="${SECRETS_DIR:-${REPO_ROOT}/secrets}"
 SPECS=(
   "tasks-db|mysql-secrets|mysql_root_password=mysql_root_password db_password=db_password"
   "tasks-app|backend-secrets|db_password=db_password"
+  "tasks-app|cloudflared-telegram|telegram_token=telegram_token"
   "monitoring|grafana-secrets|grafana_admin_password=grafana_admin_password"
   "monitoring|alertmanager-secrets|telegram_token=telegram_token"
 )
@@ -63,6 +66,7 @@ declare -A BEFORE_CHANGE=(
 declare -A AFTER_CHANGE=(
   [mysql-secrets]="kubectl -n tasks-db rollout restart sts/mysql-simple"
   [backend-secrets]="kubectl -n tasks-app rollout restart deploy/backend"
+  [cloudflared-telegram]="kubectl -n tasks-app rollout restart deploy/cloudflared-tasks   (new link, sent with the new token)"
   [grafana-secrets]="kubectl -n monitoring exec deploy/grafana -- grafana cli admin reset-admin-password '<new>'   (Grafana reads it only on first start)"
   [alertmanager-secrets]="kubectl -n monitoring rollout restart sts/alertmanager"
 )

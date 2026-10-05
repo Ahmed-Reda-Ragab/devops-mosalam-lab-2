@@ -17,10 +17,10 @@
 #  no tracking annotation, so prune on task-manager-apps never touches it.
 #
 #  The telegram-notify sidecar sends the link to the same bot and chat as
-#  Alertmanager. It needs the bot token in tasks-app (Secrets do not cross
-#  namespaces), copied once from alertmanager-secrets:
-#    kubectl -n tasks-app create secret generic cloudflared-telegram \
-#      --from-literal=telegram_token="$(kubectl -n monitoring get secret alertmanager-secrets -o jsonpath='{.data.telegram_token}' | base64 -d)"
+#  Alertmanager. It needs the bot token in tasks-app too (Secrets do not cross
+#  namespaces): Secret cloudflared-telegram, made from the same
+#  secrets/telegram_token file by
+#    bash k8s/scripts/create-secrets.sh tasks-app
 #  Without it the tunnel still works; get the link from the logs instead:
 # kubectl logs -n tasks-app -l app=cloudflared-tasks -c cloudflared --tail=100 | grep -A2 "Your quick Tunnel"
 # ============================================================================
@@ -99,7 +99,7 @@ spec:
               while true; do
                 sleep 10
                 if [ ! -s "$TOKEN_FILE" ]; then
-                  [ -n "$warned" ] || echo "no $TOKEN_FILE: create Secret cloudflared-telegram (see header of 02-cloudflared-tasks.yaml)"
+                  [ -n "$warned" ] || echo "no $TOKEN_FILE: run: bash k8s/scripts/create-secrets.sh tasks-app"
                   warned=1
                   continue
                 fi
