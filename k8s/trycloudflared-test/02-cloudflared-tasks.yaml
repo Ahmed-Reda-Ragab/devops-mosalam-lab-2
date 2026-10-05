@@ -15,6 +15,14 @@
 #
 #  Lives in tasks-app, next to the app, but Argo CD does not manage it: it has
 #  no tracking annotation, so prune on task-manager-apps never touches it.
+#
+#  The telegram-notify sidecar sends the link to the same bot and chat as
+#  Alertmanager. It needs the bot token in tasks-app (Secrets do not cross
+#  namespaces), copied once from alertmanager-secrets:
+#    kubectl -n tasks-app create secret generic cloudflared-telegram \
+#      --from-literal=telegram_token="$(kubectl -n monitoring get secret alertmanager-secrets -o jsonpath='{.data.telegram_token}' | base64 -d)"
+#  Without it the tunnel still works; get the link from the logs instead:
+# kubectl logs -n tasks-app -l app=cloudflared-tasks -c cloudflared --tail=100 | grep -A2 "Your quick Tunnel"
 # ============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -40,6 +48,7 @@ spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
+        fsGroup: 65532   # lets 65532 read the 0440 token file
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -73,3 +82,70 @@ spec:
               memory: 32Mi
             limits:
               memory: 128Mi
+
+        # Asks cloudflared's metrics server for the link instead of parsing logs:
+        # /quicktunnel returns {"hostname":"xxxx.trycloudflare.com"}. Waits for
+        # /ready, so the link already answers when the message arrives. Loops
+        # instead of exiting: if the cloudflared container restarts it gets a new
+        # link, and that one is sent too.
+        - name: telegram-notify
+          image: curlimages/curl:8.22.0
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              TOKEN_FILE=/run/secrets/telegram_token
+              last=""
+              warned=""
+              while true; do
+                sleep 10
+                if [ ! -s "$TOKEN_FILE" ]; then
+                  [ -n "$warned" ] || echo "no $TOKEN_FILE: create Secret cloudflared-telegram (see header of 02-cloudflared-tasks.yaml)"
+                  warned=1
+                  continue
+                fi
+                curl -fs -o /dev/null http://127.0.0.1:2000/ready || continue
+                host=$(curl -fs http://127.0.0.1:2000/quicktunnel | sed -n 's/.*"hostname":"\([^"]*\)".*/\1/p')
+                [ -n "$host" ] && [ "$host" != "$last" ] || continue
+                text=$(printf '<b>cloudflared-tasks</b>: new link\nhttps://%s/\npod %s on %s' "$host" "$POD_NAME" "$NODE_NAME")
+                resp=$(curl -sS --max-time 15 "https://api.telegram.org/bot$(cat "$TOKEN_FILE")/sendMessage" \
+                  --data-urlencode "chat_id=$CHAT_ID" \
+                  --data-urlencode "parse_mode=HTML" \
+                  --data-urlencode "text=$text")
+                case "$resp" in
+                  *'"ok":true'*) echo "sent https://$host/"; last=$host ;;
+                  *) echo "telegram send failed, retrying: $resp" ;;
+                esac
+              done
+          env:
+            - name: CHAT_ID
+              value: "-5406600269"   # same chat as alertmanager.yml
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: telegram
+              mountPath: /run/secrets
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              memory: 32Mi
+      volumes:
+        # optional: a missing Secret must not block the tunnel itself.
+        - name: telegram
+          secret:
+            secretName: cloudflared-telegram
+            optional: true
+            defaultMode: 0440
