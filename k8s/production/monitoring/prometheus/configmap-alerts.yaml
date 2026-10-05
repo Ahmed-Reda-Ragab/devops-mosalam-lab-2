@@ -341,7 +341,10 @@ data:
               severity: warning
             annotations:
               summary: 'TLS certificate expires soon for {{ $labels.instance }}'
-              description: 'The TLS certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }} (approximately {{ (($value / 86400) | printf "%.1f") }} days).'
+              # humanizeDuration only: Go templates have no arithmetic, and the
+              # old "($value / 86400)" failed to parse — Prometheus refuses to
+              # start when any rule file does not load.
+              description: 'The TLS certificate for {{ $labels.instance }} expires in {{ $value | humanizeDuration }}.'
 
           - alert: SSLCertificateExpiringSoonCritical
             expr: probe_ssl_earliest_cert_expiry - time() < 2 * 24 * 3600
