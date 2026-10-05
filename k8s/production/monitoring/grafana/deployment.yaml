@@ -48,6 +48,12 @@ spec:
         prometheus.io/port: "3000"
         prometheus.io/path: "/grafana/metrics"
     spec:
+      # The Secret below is mounted read-only at /run/secrets, and in this image
+      # /var/run is a symlink to /run. The ServiceAccount token would have to be
+      # mounted at /var/run/secrets/kubernetes.io/serviceaccount, i.e. a directory
+      # created INSIDE that read-only mount, and runc fails with "read-only file
+      # system". Grafana never calls the Kubernetes API, so it gets no token.
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 472       # the "grafana" uid in the official image
