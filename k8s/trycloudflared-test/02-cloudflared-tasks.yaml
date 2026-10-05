@@ -95,25 +95,37 @@ spec:
             - |
               TOKEN_FILE=/run/secrets/telegram_token
               last=""
-              warned=""
+              said=""
+              # Logs a line only when it differs from the previous one: a wait
+              # that lasts minutes is one line, not one every 10 seconds.
+              say() { [ "$1" = "$said" ] || echo "$1"; said=$1; }
+              echo "started, chat $CHAT_ID, checking every 10s"
               while true; do
                 sleep 10
                 if [ ! -s "$TOKEN_FILE" ]; then
-                  [ -n "$warned" ] || echo "no $TOKEN_FILE: run: bash k8s/scripts/create-secrets.sh tasks-app"
-                  warned=1
+                  say "waiting: no $TOKEN_FILE, run: bash k8s/scripts/create-secrets.sh tasks-app"
                   continue
                 fi
-                curl -fs -o /dev/null http://127.0.0.1:2000/ready || continue
+                code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:2000/ready)
+                if [ "$code" != 200 ]; then
+                  say "waiting: cloudflared /ready answered $code (no connection to Cloudflare yet)"
+                  continue
+                fi
                 host=$(curl -fs http://127.0.0.1:2000/quicktunnel | sed -n 's/.*"hostname":"\([^"]*\)".*/\1/p')
-                [ -n "$host" ] && [ "$host" != "$last" ] || continue
+                host=${host#https://}   # newer cloudflared may already include it
+                if [ -z "$host" ]; then
+                  say "waiting: /quicktunnel has no hostname yet"
+                  continue
+                fi
+                [ "$host" != "$last" ] || continue
                 text=$(printf '<b>cloudflared-tasks</b>: new link\nhttps://%s/\npod %s on %s' "$host" "$POD_NAME" "$NODE_NAME")
                 resp=$(curl -sS --max-time 15 "https://api.telegram.org/bot$(cat "$TOKEN_FILE")/sendMessage" \
                   --data-urlencode "chat_id=$CHAT_ID" \
                   --data-urlencode "parse_mode=HTML" \
                   --data-urlencode "text=$text")
                 case "$resp" in
-                  *'"ok":true'*) echo "sent https://$host/"; last=$host ;;
-                  *) echo "telegram send failed, retrying: $resp" ;;
+                  *'"ok":true'*) say "sent https://$host/"; last=$host ;;
+                  *) say "telegram send failed, retrying every 10s: $resp" ;;
                 esac
               done
           env:
